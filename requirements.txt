@@ -1,0 +1,15 @@
+opencv-contrib-python>=4.8.0
+numpy>=1.24.0
+pyyaml>=6.0
+
+# YOLOv8 目标检测（PyTorch后端）
+ultralytics>=8.0.0
+# 若有NVIDIA GPU，安装对应CUDA版本的PyTorch可大幅加速训练：
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# 数据标注工具
+labelme>=5.3.0
+
+# CH347 USB转I2C驱动（Windows，需同时安装WCH官方DLL）
+# DLL下载: https://www.wch.cn/products/CH347.html
+# 无需额外Python包，使用ctypes直接调用DLL
