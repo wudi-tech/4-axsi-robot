@@ -39,14 +39,16 @@ class _Reg:
     PRESCALE      = 0xFE
     TESTMODE      = 0xFF
 
-    # MODE1 位定义
-    RESTART = 0x80
-    SLEEP   = 0x10
-    ALLCALL = 0x01
+    # MODE1 位定义（PCA9685 datasheet Table 5）
+    RESTART = 0x80   # bit7: 重启 PWM 通道（写1清零并重启）
+    EXTCLK  = 0x40   # bit6: 使用外部时钟（本项目不用）
+    AI      = 0x20   # bit5: 自动地址递增（★必须置1，多字节写才能正确跨寄存器）
+    SLEEP   = 0x10   # bit4: 进入低功耗/停止振荡（修改 PRESCALE 前必须先置1）
+    ALLCALL = 0x01   # bit0: 响应全局 I2C 广播地址
 
     # MODE2 位定义
-    OUTDRV  = 0x04   # 图腾柱输出（驱动舵机必须置1）
-    INVRT   = 0x10
+    OUTDRV  = 0x04   # bit2: 图腾柱输出（驱动舵机必须置1；开漏输出置0）
+    INVRT   = 0x10   # bit4: 输出极性反转（正常不用）
 
     @staticmethod
     def led_base(channel: int) -> int:
@@ -93,38 +95,51 @@ class PCA9685:
     # ------------------------------------------------------------------ #
     def init(self):
         """
-        初始化 PCA9685：复位 → 设置 PWM 频率 → 启动输出
+        初始化 PCA9685（按 datasheet §7.3.1 推荐流程）
+
+        流程：
+          1. 进入 SLEEP（停止振荡器，才可写 PRESCALE）
+          2. 写 PRESCALE（设定 PWM 频率）
+          3. 写 MODE2（图腾柱输出，驱动舵机）
+          4. 唤醒：清除 SLEEP，同时置 AI + ALLCALL
+             ★ AI（Auto-Increment）必须置1，否则多字节写只更新第一个寄存器，
+               set_pwm_count / set_off 全部失效
+          5. 等待振荡器稳定（>500 μs）
+          6. 若 RESTART 标志残留（上次 sleep 留下），写1清除并重启通道
         """
-        # 1. 软复位
-        self._write_reg(_Reg.MODE1, _Reg.ALLCALL)
+        # 1. 进入 SLEEP（bit4=1），保留 ALLCALL（bit0=1）
+        self._write_reg(_Reg.MODE1, _Reg.SLEEP | _Reg.ALLCALL)  # 0x11
         time.sleep(0.005)
 
-        # 2. 进入 SLEEP 模式后才能修改 PRESCALE
-        mode1 = self._read_reg(_Reg.MODE1)
-        self._write_reg(_Reg.MODE1, (mode1 & ~_Reg.RESTART) | _Reg.SLEEP)
-        time.sleep(0.005)
-
-        # 3. 计算并写入预分频值
-        # prescale = round(OSC / (4096 * freq)) - 1
+        # 2. 计算并写入预分频值
+        # prescale = round(OSC_FREQ / (4096 × f)) - 1   [datasheet Eq.1]
+        # 硬件限制 3~255（对应 1526 Hz ~ 24 Hz @ 25 MHz）
         prescale = round(self.OSCILLATOR_FREQ / (4096 * self._freq)) - 1
-        prescale = max(3, min(255, prescale))  # 硬件限制 3~255
+        prescale = max(3, min(255, prescale))
         self._write_reg(_Reg.PRESCALE, prescale)
 
         actual_freq = self.OSCILLATOR_FREQ / (4096 * (prescale + 1))
         print(f"[PCA9685] PRESCALE={prescale}  "
-              f"目标频率={self._freq:.1f}Hz  实际频率≈{actual_freq:.2f}Hz")
+              f"目标={self._freq:.1f}Hz  实际≈{actual_freq:.2f}Hz")
 
-        # 4. 退出 SLEEP，使用图腾柱驱动
-        self._write_reg(_Reg.MODE2, _Reg.OUTDRV)
-        self._write_reg(_Reg.MODE1, _Reg.ALLCALL)
-        time.sleep(0.005)
+        # 3. MODE2：图腾柱输出（OUTDRV=1），极性不反转
+        self._write_reg(_Reg.MODE2, _Reg.OUTDRV)  # 0x04
 
-        # 5. 清除 RESTART 位，正式启动
+        # 4. 唤醒：清 SLEEP，置 AI（★关键）和 ALLCALL
+        # AI=1 → 每次 I2C 写后寄存器地址自动+1，4字节才能依次写 ON_L/ON_H/OFF_L/OFF_H
+        self._write_reg(_Reg.MODE1, _Reg.AI | _Reg.ALLCALL)  # 0x21
+        time.sleep(0.001)  # 等待振荡器稳定 >500 μs
+
+        # 5. 处理 RESTART 标志（若上次 sleep 前有通道在运行，此位会被置1）
+        # datasheet §7.3.1.1：写1到 RESTART 位 → 清除标志并重启所有通道
         mode1 = self._read_reg(_Reg.MODE1)
-        self._write_reg(_Reg.MODE1, mode1 & ~_Reg.SLEEP)
-        time.sleep(0.005)
+        if mode1 & _Reg.RESTART:
+            self._write_reg(_Reg.MODE1, mode1 | _Reg.RESTART)
+            time.sleep(0.001)
 
-        print(f"[PCA9685] 初始化完成，地址=0x{self._addr:02X}，频率={self._freq}Hz")
+        print(f"[PCA9685] 初始化完成  地址=0x{self._addr:02X}  "
+              f"MODE1=0x{self._read_reg(_Reg.MODE1):02X}  "
+              f"MODE2=0x{self._read_reg(_Reg.MODE2):02X}")
 
     # ------------------------------------------------------------------ #
     #  核心 PWM 控制                                                        #

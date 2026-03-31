@@ -2,12 +2,9 @@
 CH347F USB → I2C 驱动
 WCH CH347 芯片 Python 封装（Windows 平台，调用官方 DLL）
 
-CH347 官方 DLL 下载：
-    https://www.wch.cn/products/CH347.html  →  资料下载 → CH347DLL
-
-64位系统放置：CH347DLLA64.dll
-32位系统放置：CH347DLL.dll
-两者放在项目根目录或系统 PATH 中均可。
+DLL 文件位置（已随项目内置，无需另行下载）：
+    robot/libs/CH347DLLA64.DLL   ← 64位系统（主用）
+    robot/libs/CH347DLL.DLL      ← 32位系统
 
 I2C 硬件连接：
     CH347F SCL → PCA9685 SCL
@@ -27,28 +24,31 @@ from ctypes import c_ubyte, c_ulong, POINTER, byref
 #  DLL 加载                                                                 #
 # ──────────────────────────────────────────────────────────────────────── #
 def _load_dll() -> ctypes.WinDLL:
-    """自动选择并加载 CH347 DLL"""
+    """自动选择并加载 CH347 DLL（优先使用项目内置 robot/libs/ 中的版本）"""
     if platform.system() != "Windows":
         raise OSError("CH347 DLL 仅支持 Windows 平台")
 
-    # 优先搜索顺序：项目根目录 → 系统 PATH
+    is_64 = platform.machine().endswith("64")
     search_names = (
-        ["CH347DLLA64.dll", "CH347DLL.dll"]
-        if platform.machine().endswith("64")
-        else ["CH347DLL.dll", "CH347DLLA64.dll"]
+        ["CH347DLLA64.DLL", "CH347DLL.DLL"]
+        if is_64
+        else ["CH347DLL.DLL", "CH347DLLA64.DLL"]
     )
 
-    # 搜索路径：项目根 / 当前目录 / robot目录
-    script_dir  = os.path.dirname(os.path.abspath(__file__))
+    # 搜索路径：robot/libs（首选，项目内置）→ robot目录 → 项目根 → 当前目录
+    script_dir   = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    search_dirs = [project_root, script_dir, os.getcwd()]
+    libs_dir     = os.path.join(script_dir, "libs")
+    search_dirs  = [libs_dir, script_dir, project_root, os.getcwd()]
 
     for dll_name in search_names:
         for d in search_dirs:
             full_path = os.path.join(d, dll_name)
             if os.path.exists(full_path):
                 try:
-                    return ctypes.WinDLL(full_path)
+                    dll = ctypes.WinDLL(full_path)
+                    print(f"[CH347] 加载 DLL: {full_path}")
+                    return dll
                 except OSError:
                     continue
         # 最后尝试系统 PATH
@@ -59,8 +59,8 @@ def _load_dll() -> ctypes.WinDLL:
 
     raise FileNotFoundError(
         "未找到 CH347 DLL 文件。\n"
-        "请从 https://www.wch.cn/products/CH347.html 下载，\n"
-        "并将 CH347DLLA64.dll (64位) 放入项目根目录。"
+        f"预期路径：{os.path.join(script_dir, 'libs', 'CH347DLLA64.DLL')}\n"
+        "请确认 robot/libs/ 目录下存在对应 DLL 文件。"
     )
 
 
@@ -75,13 +75,29 @@ class CH347I2C:
         with CH347I2C(device_index=0, speed=CH347I2C.SPEED_FAST) as i2c:
             i2c.write(0x40, bytes([0x00, 0x00]))   # 写 PCA9685 寄存器
             data = i2c.read(0x40, 1)               # 读 1 字节
+
+    速度档位（CH347I2C_Set iMode 低3位）：
+        SPEED_20K   = 0   20  kHz
+        SPEED_STD   = 1   100 kHz（标准，上电默认）
+        SPEED_FAST  = 2   400 kHz（快速，PCA9685 最高支持 400kHz）
+        SPEED_750K  = 3   750 kHz
+        SPEED_50K   = 4   50  kHz
+        SPEED_200K  = 5   200 kHz
+        SPEED_1M    = 6   1   MHz（仅 CH347F 支持）
     """
 
-    # I2C 速度档位（对应 CH347 SetStream 参数）
-    SPEED_LOW    = 0   # 20  kHz
-    SPEED_STD    = 1   # 100 kHz（标准）
+    # I2C 速度档位（对应 CH347DLL.H CH347I2C_Set 的 iMode bit[2:0]）
+    SPEED_20K    = 0   # 20  kHz
+    SPEED_STD    = 1   # 100 kHz（标准，上电默认）
     SPEED_FAST   = 2   # 400 kHz（快速，PCA9685 支持）
-    SPEED_HIGH   = 3   # 750 kHz
+    SPEED_750K   = 3   # 750 kHz
+    SPEED_50K    = 4   # 50  kHz
+    SPEED_200K   = 5   # 200 kHz
+    SPEED_1M     = 6   # 1   MHz（仅 CH347F）
+
+    # 向后兼容别名
+    SPEED_LOW    = SPEED_20K
+    SPEED_HIGH   = SPEED_750K
 
     # 最大单次传输字节数
     MAX_WRITE_LEN = 4096
@@ -109,12 +125,15 @@ class CH347I2C:
                 "请检查 USB 连接或驱动安装"
             )
 
-        # 设置 I2C 速度
-        # CH347SetStream(DevI, Mode): Mode bit[1:0] = I2C速度
-        self._dll.CH347SetStream(c_ulong(self._dev_idx), c_ulong(self._speed))
+        # 设置 I2C 速度（CH347DLL.H: CH347I2C_Set(iIndex, iMode)）
+        # iMode bit[2:0] = I2C速度档位，见 SPEED_* 常量
+        self._dll.CH347I2C_Set(c_ulong(self._dev_idx), c_ulong(self._speed))
 
         self._opened = True
-        speed_labels = {0: "20kHz", 1: "100kHz", 2: "400kHz", 3: "750kHz"}
+        speed_labels = {
+            0: "20kHz", 1: "100kHz", 2: "400kHz", 3: "750kHz",
+            4: "50kHz", 5: "200kHz", 6: "1MHz",
+        }
         print(f"[CH347] 设备 {self._dev_idx} 已打开，"
               f"I2C速度={speed_labels.get(self._speed, '?')}")
         return True
@@ -231,6 +250,66 @@ class CH347I2C:
             print("[CH347] 未发现任何 I2C 设备")
         return found
 
+    def get_chip_type(self) -> str:
+        """
+        查询芯片类型（CH347DLL.H: CH347GetChipType）
+        Returns:
+            "CH341" / "CH347" / "CH347F" / "Unknown"
+        """
+        if not self._opened:
+            raise RuntimeError("设备未打开")
+        chip_id = self._dll.CH347GetChipType(c_ulong(self._dev_idx))
+        return {0: "CH341", 1: "CH347", 2: "CH347F"}.get(chip_id, f"Unknown({chip_id})")
+
+    def get_device_info(self) -> dict:
+        """
+        获取设备信息（CH347DLL.H: CH347GetDeviceInfor）
+        Returns:
+            dict with keys: iIndex, DevicePath, UsbClass, FuncType,
+                            DeviceID, ChipMode, BulkOutEndpMaxSize,
+                            BulkInEndpMaxSize, UsbSpeedType, CH347IfNum,
+                            DataUpEndp, DataDnEndp, ProductString, ManufacturerString
+        """
+        if not self._opened:
+            raise RuntimeError("设备未打开")
+
+        # mDeviceInforS 结构体（对应 CH347DLL.H 定义，简化版只取关键字段）
+        class _DevInfo(ctypes.Structure):
+            _fields_ = [
+                ("iIndex",              c_ulong),
+                ("DevicePath",          ctypes.c_char * 260),
+                ("UsbClass",            ctypes.c_ubyte),
+                ("FuncType",            ctypes.c_ubyte),
+                ("DeviceID",            ctypes.c_char * 64),
+                ("ChipMode",            ctypes.c_ubyte),
+                ("BulkOutEndpMaxSize",  ctypes.c_ushort),
+                ("BulkInEndpMaxSize",   ctypes.c_ushort),
+                ("UsbSpeedType",        ctypes.c_ubyte),
+                ("CH347IfNum",          ctypes.c_ubyte),
+                ("DataUpEndp",          ctypes.c_ubyte),
+                ("DataDnEndp",          ctypes.c_ubyte),
+                ("ProductString",       ctypes.c_char * 64),
+                ("ManufacturerString",  ctypes.c_char * 64),
+            ]
+
+        info = _DevInfo()
+        ret  = self._dll.CH347GetDeviceInfor(
+            c_ulong(self._dev_idx), ctypes.byref(info)
+        )
+        if not ret:
+            return {}
+        return {
+            "iIndex":             info.iIndex,
+            "DeviceID":           info.DeviceID.decode(errors="ignore"),
+            "ChipMode":           info.ChipMode,
+            "UsbSpeedType":       {0: "FullSpeed(12Mbps)",
+                                   1: "HighSpeed(480Mbps)"}.get(info.UsbSpeedType, "?"),
+            "BulkOutEndpMaxSize": info.BulkOutEndpMaxSize,
+            "BulkInEndpMaxSize":  info.BulkInEndpMaxSize,
+            "ProductString":      info.ProductString.decode(errors="ignore"),
+            "ManufacturerString": info.ManufacturerString.decode(errors="ignore"),
+        }
+
     # ------------------------------------------------------------------ #
     #  上下文管理器                                                          #
     # ------------------------------------------------------------------ #
@@ -249,5 +328,11 @@ class CH347I2C:
 if __name__ == "__main__":
     print("CH347 I2C 总线扫描测试")
     with CH347I2C(device_index=0, speed=CH347I2C.SPEED_FAST) as i2c:
+        chip = i2c.get_chip_type()
+        print(f"[CH347] 芯片型号: {chip}")
+        info = i2c.get_device_info()
+        if info:
+            print(f"[CH347] 产品名称: {info['ProductString']}")
+            print(f"[CH347] USB速度:  {info['UsbSpeedType']}")
         devices = i2c.scan()
         print(f"共发现 {len(devices)} 个设备: {[hex(a) for a in devices]}")

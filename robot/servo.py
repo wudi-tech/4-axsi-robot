@@ -2,12 +2,15 @@
 RDS3235 舵机角度 ↔ PWM 映射
 以及单路/多路舵机控制封装
 
-RDS3235 规格确认：
+RDS3235 规格（Dsservo datasheet）：
+    工作电压：5 ~ 7.4 V（推荐 7.4 V）
     脉宽范围：500 ~ 2500 μs
     中点脉宽：1500 μs
     控制角度：270°（对应 500~2500 μs 全范围）
     旋转方向：逆时针（脉宽增大时逆时针，即 500μs=0°, 2500μs=270°）
-    控制频率：50~330 Hz（本系统使用 50 Hz）
+    控制频率：50 ~ 330 Hz（本系统使用 50 Hz）
+    无负载速度：5V→0.18 s/60°  7.4V→0.13 s/60°  ≈ 7.4V时 ~460 °/s
+    堵转扭矩：7.4V → 30 kg·cm
 
 角度定义（本项目统一约定）：
     0°   → 500  μs → 机械限位一端
@@ -81,6 +84,9 @@ class Servo:
 
     角度 → 脉宽 → 12bit count 的完整换算链
     """
+
+    # RDS3235 @ 7.4V 无负载最大速度（°/s）
+    MAX_SPEED_DEG_S = 460.0   # 0.13 s/60° → 461.5 °/s，保守取 460
 
     def __init__(self, pca: PCA9685, config: ServoConfig):
         self._pca    = pca
@@ -161,7 +167,10 @@ class Servo:
         us    = self.angle_to_us(physical_angle)
         count = self._pca.us_to_count(us)
         self._pca.set_pwm_count(cfg.channel, count)
-        self._current_angle = angle_deg
+
+        # 存储实际发出的角度（扣回偏置），而非原始命令值
+        # 若限位截断了命令，move_smooth 从此角度开始插值才正确
+        self._current_angle = physical_angle - cfg.offset_deg
 
     def set_pulse_us(self, pulse_us: float):
         """直接用脉宽（μs）控制，跳过角度换算（调试用）"""
@@ -187,6 +196,43 @@ class Servo:
     @property
     def config(self) -> ServoConfig:
         return self._cfg
+
+    def move_smooth(self, target_deg: float,
+                    steps: int = 50,
+                    delay_s: float = 0.02,
+                    speed_deg_per_s: float = None,
+                    check_limit: bool = True):
+        """
+        平滑插值运动到目标角度
+
+        Args:
+            target_deg:      目标角度 (°)
+            steps:           插值步数（speed_deg_per_s 为 None 时生效）
+            delay_s:         每步延迟秒数（speed_deg_per_s 为 None 时生效）
+            speed_deg_per_s: 按角速度指定运动速度（°/s），自动计算 steps/delay
+                             RDS3235 @ 7.4V 最大约 460 °/s，推荐 ≤200 °/s
+                             设为 None 则使用 steps/delay_s 参数
+            check_limit:     是否检查软限位
+        """
+        current = self._current_angle
+        if current is None:
+            self.go_home()
+            current = 135.0
+            time.sleep(0.5)
+
+        if speed_deg_per_s is not None and speed_deg_per_s > 0:
+            delta = abs(target_deg - current)
+            if delta < 0.5:
+                return
+            total_time = delta / speed_deg_per_s
+            delay_s = 0.02
+            steps = max(1, round(total_time / delay_s))
+
+        for step in range(1, steps + 1):
+            t = step / steps
+            interp = current + (target_deg - current) * t
+            self.set_angle(interp, check_limit)
+            time.sleep(delay_s)
 
     def print_status(self):
         self._pca.print_channel_status(self._cfg.channel)
@@ -257,15 +303,19 @@ class ServoGroup:
     def move_smooth(self, target_angles: list[float],
                     steps: int = 50,
                     delay_s: float = 0.02,
+                    speed_deg_per_s: float = None,
                     check_limit: bool = True):
         """
         平滑插值运动：从当前角度平滑过渡到目标角度
 
         Args:
-            target_angles: 目标角度列表
-            steps: 插值步数（越大越平滑，速度越慢）
-            delay_s: 每步延迟（秒），控制运动速度
-            check_limit: 是否检查软限位
+            target_angles:   目标角度列表
+            steps:           插值步数（speed_deg_per_s 为 None 时生效）
+            delay_s:         每步延迟秒数（speed_deg_per_s 为 None 时生效）
+            speed_deg_per_s: 按角速度指定运动速度（°/s），自动计算 steps/delay
+                             RDS3235 @ 7.4V 最大约 460 °/s，推荐 ≤200 °/s
+                             设为 None 则使用 steps/delay_s 参数
+            check_limit:     是否检查软限位
         """
         current = self.get_angles()
 
@@ -276,6 +326,18 @@ class ServoGroup:
                 self._servos[i].go_home()
                 current[i] = 135.0
         time.sleep(0.5)
+
+        # 按速度自动计算 steps / delay_s
+        if speed_deg_per_s is not None and speed_deg_per_s > 0:
+            max_delta = max(
+                abs(tgt - cur) for cur, tgt in zip(current, target_angles)
+            )
+            if max_delta < 0.5:
+                return  # 几乎不动，跳过
+            total_time = max_delta / speed_deg_per_s
+            # 每步间隔固定 20ms（与 PWM 50Hz 帧率匹配）
+            delay_s = 0.02
+            steps   = max(1, round(total_time / delay_s))
 
         for step in range(1, steps + 1):
             t = step / steps  # 0~1 线性插值因子
