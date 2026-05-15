@@ -59,13 +59,35 @@ class CameraCalibrator:
         return obj
 
     def _find_corners(self, gray: np.ndarray):
-        """在灰度图中检测棋盘格角点，返回 (found, corners)"""
-        flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        found, corners = cv2.findChessboardCorners(gray, self.board_size, flags)
+        """
+        在灰度图中检测棋盘格角点，返回 (found, corners)。
+        1080P 原图上 findChessboardCorners 耗时 200-500ms，
+        先降采样至 ≤960px 宽做快速检测（~50ms），再在原图亚像素精化，精度不受影响。
+        """
+        flags = (cv2.CALIB_CB_ADAPTIVE_THRESH
+               | cv2.CALIB_CB_NORMALIZE_IMAGE
+               | cv2.CALIB_CB_FAST_CHECK)    # FAST_CHECK: 无棋盘时 <5ms 跳过
+
+        # ── 降采样加速检测 ────────────────────────────────────────────
+        h, w = gray.shape[:2]
+        MAX_DIM = 960
+        if max(h, w) > MAX_DIM:
+            scale = MAX_DIM / max(h, w)
+            small = cv2.resize(gray, None, fx=scale, fy=scale,
+                               interpolation=cv2.INTER_AREA)
+        else:
+            scale = 1.0
+            small = gray
+
+        found, corners = cv2.findChessboardCorners(small, self.board_size, flags)
+
         if found:
+            # 映射回原图坐标 → 原图亚像素精化（精度与全图检测一致）
+            corners = corners / scale
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
                         30, 0.001)
-            corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+            corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1),
+                                       criteria)
         return found, corners
 
     # ------------------------------------------------------------------ #

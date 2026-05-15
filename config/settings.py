@@ -16,6 +16,17 @@ CAMERA_HEIGHT = 1080      # 分辨率高
 CAMERA_FPS    = 30        # 帧率
 CAMERA_BACKEND = None     # None=自动选择, 也可指定 cv2.CAP_DSHOW (Windows) 等
 
+# MJPG 格式：USB 摄像头在 1080P 下用 RAW(YUY2) 带宽不足导致 5fps，
+# 改为 MJPG 硬件压缩后通常可恢复至 30fps。None=不设置（保持驱动默认）
+CAMERA_FOURCC = "MJPG"
+
+# 曝光控制：自动曝光频繁调整是果冻效应的主因之一。
+# False=手动曝光（帧间一致，果冻明显改善）；True=自动曝光
+CAMERA_AUTO_EXPOSURE = False
+# 手动曝光值，仅 CAMERA_AUTO_EXPOSURE=False 时生效。
+# DirectShow 下为 2^n 秒，-6 ≈ 1/64s，适合室内光线。调亮加大（-5），调暗减小（-7）
+CAMERA_EXPOSURE = -4
+
 # ─── 标定板参数 ────────────────────────────────────────────────
 # 棋盘格内角点数 (列数-1, 行数-1)
 CHESSBOARD_COLS   = 9     # 列方向内角点数
@@ -34,10 +45,14 @@ HAND_EYE_MIN_POSES = 10
 # 标定结果保存路径
 CAMERA_CALIB_FILE   = os.path.join(CALIB_DIR, "camera_intrinsic.npz")
 HAND_EYE_CALIB_FILE = os.path.join(CALIB_DIR, "hand_eye_extrinsic.npz")
+HOMOGRAPHY_FILE     = os.path.join(CALIB_DIR, "homography.npz")
 
 # ─── 目标检测参数 ──────────────────────────────────────────────
 # ArUco 字典类型
 ARUCO_DICT_TYPE = "DICT_4X4_50"
+
+# YOLO 自定义模型路径（训练完成后由 tools/train.py 生成）
+YOLO_MODEL_PATH = os.path.join(DATA_DIR, "models", "best.pt")
 
 # 颜色检测 HSV 范围 (OpenCV: H 0-180, S 0-255, V 0-255)
 # 以下为初始参考值，请用 tools/multi_color_detect.py 调参后替换

@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 3
+names: ['carrot', 'mickey', 'tissue']
+
+roboflow:
+  workspace: ayaanshs-workspace
+  project: carrot-gxdxi-ytefi
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/ayaanshs-workspace/carrot-gxdxi-ytefi/dataset/3

@@ -12,11 +12,10 @@ import cv2
 import numpy as np
 import os
 import sys
-from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from detection.detector import DetectionResult
-from config.settings import MIN_CONTOUR_AREA
+from detection.result import DetectionResult
+from config.settings import MIN_CONTOUR_AREA, YOLO_MODEL_PATH
 
 # COCO 数据集中与项目相关的类别（预训练模型直接可用）
 COCO_CLASSES_OF_INTEREST = {
@@ -49,7 +48,7 @@ class YOLODetector:
                  device: str = None):
         """
         Args:
-            model_path:      模型路径，None 则自动下载 yolov8n.pt 预训练模型
+            model_path:      模型路径，None 则使用 settings.YOLO_MODEL_PATH（data/models/best.pt），不存在则降级为 yolov8n.pt
             conf_threshold:  置信度阈值，低于此值的检测结果被丢弃
             iou_threshold:   NMS IoU 阈值
             target_classes:  只保留这些类别名称的检测结果，None=保留全部
@@ -64,10 +63,13 @@ class YOLODetector:
                 "  pip install ultralytics"
             )
 
-        # 默认使用最轻量的 YOLOv8n（nano）
+        # 默认使用用户训练的自定义模型（settings.py 中配置）
         if model_path is None:
-            model_path = "yolov8n.pt"
-            print(f"[YOLO] 使用预训练模型: {model_path}（首次运行自动下载）")
+            model_path = YOLO_MODEL_PATH
+            if not os.path.exists(model_path):
+                print(f"[YOLO] 自定义模型不存在: {model_path}，降级为 yolov8n.pt")
+                model_path = "yolov8n.pt"
+            print(f"[YOLO] 使用模型: {model_path}")
         else:
             if not os.path.exists(model_path):
                 raise FileNotFoundError(f"模型文件不存在: {model_path}")
@@ -100,7 +102,7 @@ class YOLODetector:
         对一帧图像运行 YOLO 检测
 
         Returns:
-            DetectionResult 列表，与原有 ArucoDetector/ColorDetector 接口一致
+            DetectionResult 列表，供 VisionPipeline 和语音抓取流程使用
         """
         results = self._model(
             image,

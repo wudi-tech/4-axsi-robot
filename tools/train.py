@@ -2,7 +2,14 @@
 YOLOv8 自定义训练脚本
 基于 PyTorch + ultralytics
 
-完整流程：
+数据集来源（二选一，自动检测）：
+  [优先] data/images/carrot.v3i.yolov8/  ← Roboflow 导出的 YOLOv8 格式数据集
+  [备用] data/dataset/                   ← 手动采集 + Labelme 标注流程
+
+使用 Roboflow 数据集（已就绪）：
+  python tools/train.py                  (直接运行即可)
+
+手动采集流程：
   Step 1: python tools/collect_dataset.py --class carrot  (每类采集 ~100 张)
   Step 2: 用 Labelme 标注图像（见下方说明）
   Step 3: python tools/collect_dataset.py --split         (分割 train/val)
@@ -24,22 +31,23 @@ import shutil
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATASET_DIR = os.path.join(BASE_DIR, "data", "dataset")
-MODEL_DIR   = os.path.join(BASE_DIR, "data", "models")
+BASE_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATASET_DIR     = os.path.join(BASE_DIR, "data", "dataset")
+MODEL_DIR       = os.path.join(BASE_DIR, "data", "models")
+ROBOFLOW_DIR    = os.path.join(BASE_DIR, "data", "images", "carrot.v3i.yolov8")
 
 # ──────────────────────────────────────────────────────────────────────── #
-#  类别定义（根据你的实际目标修改）                                           #
+#  类别定义（与 Roboflow data.yaml 的 names 顺序保持一致）                   #
 # ──────────────────────────────────────────────────────────────────────── #
 CLASS_NAMES = [
     "carrot",   # 0: 萝卜
-    "tissue",   # 1: 纸巾
-    "mickey",   # 2: 米老鼠
+    "mickey",   # 1: 米老鼠
+    "tissue",   # 2: 纸巾
 ]
 
 
 def generate_dataset_yaml(dataset_dir: str, class_names: list) -> str:
-    """生成 YOLO 格式的 dataset.yaml 配置文件"""
+    """生成 YOLO 格式的 dataset.yaml 配置文件（用于手动采集的数据集）"""
     yaml_path = os.path.join(dataset_dir, "dataset.yaml")
     config = {
         "path": dataset_dir.replace("\\", "/"),
@@ -54,20 +62,67 @@ def generate_dataset_yaml(dataset_dir: str, class_names: list) -> str:
     return yaml_path
 
 
-def check_dataset(dataset_dir: str) -> bool:
-    """检查数据集目录结构是否正确"""
+def get_dataset_yaml() -> str:
+    """
+    自动选择数据集并返回可用的 yaml 路径。
+    优先使用 Roboflow 导出的数据集（data/images/carrot.v3i.yolov8/），
+    Roboflow 导出的 data.yaml 含 '../train/images' 相对路径（已知问题），
+    此函数会自动生成修正版 yaml 到 data/models/dataset.yaml。
+    """
+    roboflow_yaml = os.path.join(ROBOFLOW_DIR, "data.yaml")
+    if os.path.exists(roboflow_yaml):
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        fixed_yaml = os.path.join(MODEL_DIR, "dataset.yaml")
+        config = {
+            "path":  ROBOFLOW_DIR.replace("\\", "/"),
+            "train": "train/images",
+            "val":   "valid/images",
+            "test":  "test/images",
+            "nc":    len(CLASS_NAMES),
+            "names": CLASS_NAMES,
+        }
+        with open(fixed_yaml, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
+        print(f"[Train] 检测到 Roboflow 数据集: {ROBOFLOW_DIR}")
+        print(f"[Train] 已生成修正路径的 yaml: {fixed_yaml}")
+        return fixed_yaml
+    else:
+        return generate_dataset_yaml(DATASET_DIR, CLASS_NAMES)
+
+
+def check_dataset() -> bool:
+    """检查数据集目录结构是否正确，支持 Roboflow 和手动采集两种格式"""
+    # 优先检查 Roboflow 数据集
+    if os.path.exists(os.path.join(ROBOFLOW_DIR, "data.yaml")):
+        required = {
+            "train/images": os.path.join(ROBOFLOW_DIR, "train", "images"),
+            "train/labels": os.path.join(ROBOFLOW_DIR, "train", "labels"),
+            "valid/images": os.path.join(ROBOFLOW_DIR, "valid", "images"),
+            "valid/labels": os.path.join(ROBOFLOW_DIR, "valid", "labels"),
+        }
+        ok = True
+        for rel, d in required.items():
+            n = len([f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))]) \
+                if os.path.exists(d) else 0
+            status = "✓" if n > 0 else "✗ (空)"
+            print(f"  {status}  {rel}: {n} 个文件")
+            if n == 0:
+                ok = False
+        return ok
+
+    # 退而检查手动采集数据集
     required = [
-        os.path.join(dataset_dir, "images", "train"),
-        os.path.join(dataset_dir, "images", "val"),
-        os.path.join(dataset_dir, "labels", "train"),
-        os.path.join(dataset_dir, "labels", "val"),
+        os.path.join(DATASET_DIR, "images", "train"),
+        os.path.join(DATASET_DIR, "images", "val"),
+        os.path.join(DATASET_DIR, "labels", "train"),
+        os.path.join(DATASET_DIR, "labels", "val"),
     ]
     ok = True
     for d in required:
         n = len([f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))]) \
             if os.path.exists(d) else 0
         status = "✓" if n > 0 else "✗ (空)"
-        print(f"  {status}  {os.path.relpath(d, dataset_dir)}: {n} 个文件")
+        print(f"  {status}  {os.path.relpath(d, DATASET_DIR)}: {n} 个文件")
         if n == 0:
             ok = False
     return ok
@@ -103,7 +158,7 @@ def train(epochs:      int   = 100,
 
     # ── 1. 检查数据集 ────────────────────────────────────────────────────
     print("\n[Train] 检查数据集...")
-    if not check_dataset(DATASET_DIR):
+    if not check_dataset():
         print("\n[Train] 数据集不完整，请先完成以下步骤：")
         print("  1. python tools/collect_dataset.py --class carrot")
         print("  2. python tools/collect_dataset.py --class tissue")
@@ -113,8 +168,8 @@ def train(epochs:      int   = 100,
         print("  6. python tools/collect_dataset.py --split")
         sys.exit(1)
 
-    # ── 2. 生成 dataset.yaml ──────────────────────────────────────────────
-    yaml_path = generate_dataset_yaml(DATASET_DIR, CLASS_NAMES)
+    # ── 2. 获取 dataset.yaml（自动选择 Roboflow 或手动数据集）──────────────
+    yaml_path = get_dataset_yaml()
 
     # ── 3. 选择基础模型 ───────────────────────────────────────────────────
     base_model = f"yolov8{model_size}.pt" if pretrained else f"yolov8{model_size}.yaml"
@@ -181,7 +236,7 @@ def validate(model_path: str = None):
         print(f"[Val] 模型不存在: {model_path}")
         return
 
-    yaml_path = os.path.join(DATASET_DIR, "dataset.yaml")
+    yaml_path = get_dataset_yaml()
     model     = YOLO(model_path)
     metrics   = model.val(data=yaml_path, verbose=True)
 

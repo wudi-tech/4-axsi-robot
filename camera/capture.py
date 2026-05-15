@@ -1,17 +1,22 @@
 """
 相机采集模块
 支持 USB UVC 协议摄像头，1080P 30fps
+
+采用后台线程持续读帧，主线程调用 read() 立即返回最新帧，
+避免 YOLO 推理期间摄像头阻塞导致帧率腰斩。
 """
 from __future__ import annotations
 import cv2
 import numpy as np
+import threading
 import time
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
-    CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS, CAMERA_BACKEND
+    CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS, CAMERA_BACKEND,
+    CAMERA_FOURCC, CAMERA_AUTO_EXPOSURE, CAMERA_EXPOSURE,
 )
 
 
@@ -40,6 +45,11 @@ class CameraCapture:
         self.height = height
         self.fps    = fps
         self._cap   = None
+        # ── 后台读帧线程 ──────────────────────────────────────────────
+        self._thread:       threading.Thread | None = None
+        self._latest_frame: np.ndarray | None       = None
+        self._frame_lock                            = threading.Lock()
+        self._streaming                             = False
 
     # ------------------------------------------------------------------ #
     #  打开 / 关闭                                                          #
@@ -61,24 +71,60 @@ class CameraCapture:
                 "请检查设备连接或索引是否正确。"
             )
 
-        # 设置分辨率和帧率
+        # ── MJPG 格式（必须在设置分辨率之前设置，否则部分驱动不生效）──────
+        if CAMERA_FOURCC:
+            fourcc = cv2.VideoWriter_fourcc(*CAMERA_FOURCC)
+            self._cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+
+        # ── 分辨率 / 帧率 ─────────────────────────────────────────────────
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._cap.set(cv2.CAP_PROP_FPS,          self.fps)
 
-        # 关闭自动曝光抖动缓冲 (减小延迟)
+        # ── 曝光控制（减少帧间亮度抖动，改善果冻效应）───────────────────────
+        # DirectShow：auto=3 / manual=1；V4L2：auto=3 / manual=1（值相同）
+        if not CAMERA_AUTO_EXPOSURE:
+            self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)        # 切换为手动
+            self._cap.set(cv2.CAP_PROP_EXPOSURE, CAMERA_EXPOSURE)
+
+        # ── 缓冲区最小化（减小读取延迟）──────────────────────────────────
         self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        # 读取实际生效值并打印
-        actual_w   = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h   = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
+        # ── 读取实际生效值并打印 ───────────────────────────────────────────
+        actual_w    = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h    = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps  = self._cap.get(cv2.CAP_PROP_FPS)
+        actual_exp  = self._cap.get(cv2.CAP_PROP_EXPOSURE)
+        fourcc_int  = int(self._cap.get(cv2.CAP_PROP_FOURCC))
+        actual_fmt  = "".join([chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)])
         print(f"[Camera] 已打开: index={self.index}  "
-              f"分辨率={actual_w}x{actual_h}  FPS={actual_fps:.1f}")
+              f"分辨率={actual_w}x{actual_h}  FPS={actual_fps:.1f}  "
+              f"格式={actual_fmt}  曝光={actual_exp:.0f}")
+        if actual_fps < 15:
+            print("[Camera] 警告: 帧率仍低于 15fps，"
+                  "可尝试降低分辨率（settings.py CAMERA_WIDTH/HEIGHT）"
+                  "或检查 USB 接口是否为 USB 3.0")
+
+        # ── 启动后台读帧线程 ──────────────────────────────────────────
+        self._streaming = True
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
         return True
+
+    def _capture_loop(self):
+        """后台持续读帧，保证 read() 永远拿到最新画面且不阻塞"""
+        while self._streaming and self._cap and self._cap.isOpened():
+            ret, frame = self._cap.read()
+            if ret:
+                with self._frame_lock:
+                    self._latest_frame = frame
 
     def release(self):
         """释放摄像头资源"""
+        self._streaming = False
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
         if self._cap and self._cap.isOpened():
             self._cap.release()
             self._cap = None
@@ -89,16 +135,15 @@ class CameraCapture:
     # ------------------------------------------------------------------ #
     def read(self) -> np.ndarray:
         """
-        读取一帧图像 (BGR)
-        返回 None 表示读取失败
+        读取最新一帧图像 (BGR)。
+        后台线程持续采集，此方法立即返回，不阻塞。
+        返回 None 表示尚无可用帧。
         """
         if self._cap is None or not self._cap.isOpened():
             raise RuntimeError("摄像头未打开，请先调用 open()")
 
-        ret, frame = self._cap.read()
-        if not ret or frame is None:
-            return None
-        return frame
+        with self._frame_lock:
+            return self._latest_frame.copy() if self._latest_frame is not None else None
 
     def read_undistorted(self, camera_matrix: np.ndarray,
                          dist_coeffs: np.ndarray) -> np.ndarray:

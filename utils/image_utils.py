@@ -140,7 +140,7 @@ def draw_results_on_image(image: np.ndarray,
 
         # 标签
         label_lines = [f"#{i} {det.label}  {det.angle_deg:.1f}°"]
-        if robot_coords and i < len(robot_coords):
+        if robot_coords is not None and i < len(robot_coords) and robot_coords[i] is not None:
             rx, ry, rz = robot_coords[i]
             label_lines.append(f"Robot: ({rx:.1f}, {ry:.1f}, {rz:.1f}) mm")
 

@@ -84,7 +84,7 @@ cx, cy：主点（光轴与成像平面的交点，通常接近图像中心）
 **第二步：运行采集程序**
 
 ```bash
-python main.py --mode calibrate_camera
+python tools/calibrate_camera.py
 ```
 
 程序会打开摄像头实时画面，操作说明：
@@ -393,7 +393,7 @@ print(f"TCP 触碰标定完成，RMS = {rms:.2f} mm")
 此后每次相机移动重标定后，通过检测 ArUco 自动恢复基坐标系原点，无需重新量尺子。
 
 ```python
-from detection.detector import ArucoDetector
+from tools.debug_detectors import ArucoDetector
 
 # ArUco 标记中心相对于 J1 轴中心的固定偏移（量一次，永久有效）
 ARUCO_TO_BASE_X = -45.0   # mm，实测
@@ -510,7 +510,7 @@ T_cam2base = [R | t]    R: 3×3 旋转矩阵
 **采集流程**：
 
 ```bash
-python main.py --mode calibrate_hand_eye
+python tools/calibrate_hand_eye.py
 ```
 
 1. 手动控制机械臂运动到第一个位姿
@@ -569,7 +569,7 @@ robot_xyz = transform.pixel_to_robot(u=640, v=380, z_world_mm=0.0)
 
 ```
 Step 1  相机内参标定（已完成 ✅，RMS = 0.6685 px）
-          python main.py --mode calibrate_camera
+          python tools/calibrate_camera.py
 
 Step 2  单应矩阵标定（立即可做）
           python tools/calibrate_homography.py --mode auto
@@ -579,7 +579,7 @@ Step 3  验证标定结果
           移动鼠标，物理坐标误差应 < 3 mm
 
 Step 4  （待机械臂联调后）手眼标定
-          python main.py --mode calibrate_hand_eye
+          python tools/calibrate_hand_eye.py
 ```
 
 ---

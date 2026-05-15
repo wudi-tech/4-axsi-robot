@@ -1,6 +1,10 @@
 """
 RDS3235 舵机角度 ↔ PWM 映射
-以及单路/多路舵机控制封装
+以及单路/多路舵机控制封装。
+
+注意：本项目的正式硬件控制优先使用 DEFAULT_SERVO_CONFIGS 中来自
+ku.py 实机跑通的 angle→PCA9685 count 标定；RDS3235 的通用脉宽换算
+保留为备用调试接口。
 
 RDS3235 规格（Dsservo datasheet）：
     工作电压：5 ~ 7.4 V（推荐 7.4 V）
@@ -28,7 +32,7 @@ from __future__ import annotations
 import time
 import sys
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from robot.pca9685 import PCA9685
@@ -43,11 +47,14 @@ class ServoConfig:
     channel:      int          # PCA9685 通道号 0~15
     min_us:       float = 500.0   # 最小脉宽 μs（对应 min_angle）
     max_us:       float = 2500.0  # 最大脉宽 μs（对应 max_angle）
+    min_count:    float | None = None  # 可选：直接按 PCA9685 count 标定
+    max_count:    float | None = None
     min_angle:    float = 0.0     # 对应 min_us 的角度 (°)
     max_angle:    float = 270.0   # 对应 max_us 的角度 (°)
     offset_deg:   float = 0.0     # 安装偏置角度 (°)，补偿安装误差
     reversed:     bool  = False   # True=方向反转（等效于交换 min/max）
     name:         str   = ""      # 关节名称（便于调试）
+    home_angle:   float | None = None
 
     # 软限位（在机械限位内进一步约束，防止碰撞）
     soft_min_deg: float = 0.0
@@ -59,19 +66,42 @@ class ServoConfig:
 
 
 # ──────────────────────────────────────────────────────────────────────── #
-#  四轴舵机预设配置                                                          #
+#  五轴舵机预设配置（命名与 datasheet/机械臂示意图草图.jpg 一致）              #
 # ──────────────────────────────────────────────────────────────────────── #
-# 根据实际安装方向调整 reversed 和 offset_deg
-# 连杆尺寸确定后再设置合理的 soft_min/max 限位
+# 下面的 count 映射来自项目根目录 ku.py，已按实机跑通的控制函数整理：
+#   putDJ0: count = 25/18 * angle + 150       angle 0~180
+#   putDJ1: count = -13/9 * angle + 380       angle 0~90
+#   putDJ2: count = -205/142 * angle + 550    angle 38~180
+#   putDJ3: count = 10/7 * angle + 163        angle 38~180
+#   zhuazi: open=280 count, close=210 count
 DEFAULT_SERVO_CONFIGS = [
-    ServoConfig(channel=0, name="J1_底座旋转",
-                soft_min_deg=0.0, soft_max_deg=270.0),
-    ServoConfig(channel=1, name="J2_大臂俯仰",
-                soft_min_deg=30.0, soft_max_deg=210.0),  # 避免碰底座
-    ServoConfig(channel=2, name="J3_小臂俯仰",
-                soft_min_deg=20.0, soft_max_deg=250.0),
-    ServoConfig(channel=3, name="J4_末端/夹爪",
-                soft_min_deg=0.0, soft_max_deg=270.0),
+    ServoConfig(channel=0, name="m0_底座旋转",
+                min_angle=0.0, max_angle=180.0,
+                min_count=150.0, max_count=400.0,
+                soft_min_deg=0.0, soft_max_deg=180.0,
+                home_angle=90.0),
+    ServoConfig(channel=1, name="m1_肩关节俯仰",
+                min_angle=0.0, max_angle=90.0,
+                min_count=380.0, max_count=250.0,
+                soft_min_deg=0.0, soft_max_deg=90.0,
+                home_angle=90.0),
+    ServoConfig(channel=2, name="m2_肘关节俯仰",
+                min_angle=38.0, max_angle=180.0,
+                min_count=495.0, max_count=290.0,
+                soft_min_deg=38.0, soft_max_deg=180.0,
+                home_angle=120.0),
+    ServoConfig(channel=3, name="m3_腕关节俯仰",
+                min_angle=38.0, max_angle=180.0,
+                min_count=(10.0 / 7.0) * 38.0 + 163.0,
+                max_count=(10.0 / 7.0) * 180.0 + 163.0,
+                soft_min_deg=38.0, soft_max_deg=180.0,
+                home_angle=60.0),
+    # m4 夹爪：沿用 ku.py 的 zhuazi_pwm，0≈闭合，180≈张开。
+    ServoConfig(channel=4, name="m4_夹爪",
+                min_count=210.0, max_count=280.0,
+                min_angle=0.0, max_angle=180.0,
+                soft_min_deg=0.0, soft_max_deg=180.0,
+                home_angle=180.0),
 ]
 
 
@@ -106,21 +136,21 @@ class Servo:
         reversed=True 时方向反转：
             us = max_us - (angle / range_deg) × (max_us - min_us)
         """
-        cfg = self._cfg
-        range_deg = cfg.max_angle - cfg.min_angle
-        ratio     = (angle_deg - cfg.min_angle) / range_deg
-
-        if cfg.reversed:
-            us = cfg.max_us - ratio * (cfg.max_us - cfg.min_us)
-        else:
-            us = cfg.min_us + ratio * (cfg.max_us - cfg.min_us)
-
-        return float(us)
+        count = self.angle_to_count(angle_deg)
+        return self._pca.count_to_us(count)
 
     def us_to_angle(self, pulse_us: float) -> float:
         """脉宽（μs）→ 角度"""
         cfg = self._cfg
         range_deg = cfg.max_angle - cfg.min_angle
+
+        if cfg.min_count is not None and cfg.max_count is not None:
+            count = self._pca.us_to_count(pulse_us)
+            count_range = cfg.max_count - cfg.min_count
+            if abs(count_range) < 1e-9:
+                return cfg.min_angle
+            ratio = (count - cfg.min_count) / count_range
+            return cfg.min_angle + ratio * range_deg
 
         if cfg.reversed:
             ratio = (cfg.max_us - pulse_us) / (cfg.max_us - cfg.min_us)
@@ -131,7 +161,24 @@ class Servo:
 
     def angle_to_count(self, angle_deg: float) -> int:
         """角度 → 12bit PWM count（直接写入 PCA9685）"""
-        us = self.angle_to_us(angle_deg)
+        cfg = self._cfg
+        range_deg = cfg.max_angle - cfg.min_angle
+        if abs(range_deg) < 1e-9:
+            ratio = 0.0
+        else:
+            ratio = (angle_deg - cfg.min_angle) / range_deg
+
+        if cfg.min_count is not None and cfg.max_count is not None:
+            if cfg.reversed:
+                count = cfg.max_count - ratio * (cfg.max_count - cfg.min_count)
+            else:
+                count = cfg.min_count + ratio * (cfg.max_count - cfg.min_count)
+            return max(0, min(4095, round(count)))
+
+        if cfg.reversed:
+            us = cfg.max_us - ratio * (cfg.max_us - cfg.min_us)
+        else:
+            us = cfg.min_us + ratio * (cfg.max_us - cfg.min_us)
         return self._pca.us_to_count(us)
 
     # ------------------------------------------------------------------ #
@@ -164,8 +211,7 @@ class Servo:
         # 硬件角度范围检查
         physical_angle = max(cfg.min_angle, min(cfg.max_angle, physical_angle))
 
-        us    = self.angle_to_us(physical_angle)
-        count = self._pca.us_to_count(us)
+        count = self.angle_to_count(physical_angle)
         self._pca.set_pwm_count(cfg.channel, count)
 
         # 存储实际发出的角度（扣回偏置），而非原始命令值
@@ -179,9 +225,12 @@ class Servo:
         self._current_angle = self.us_to_angle(pulse_us)
 
     def go_home(self):
-        """归中：运动到中位 1500μs（135°）"""
-        self.set_pulse_us(1500.0)
-        print(f"[Servo] {self._cfg.name} 归中")
+        """回到该轴配置的安全 home 角。"""
+        if self._cfg.home_angle is not None:
+            self.set_angle(self._cfg.home_angle)
+        else:
+            self.set_pulse_us(1500.0)
+        print(f"[Servo] {self._cfg.name} 归位")
 
     def power_off(self):
         """断开 PWM 输出（舵机失去保持力，自由转动）"""
@@ -217,7 +266,7 @@ class Servo:
         current = self._current_angle
         if current is None:
             self.go_home()
-            current = 135.0
+            current = self._current_angle if self._current_angle is not None else target_deg
             time.sleep(0.5)
 
         if speed_deg_per_s is not None and speed_deg_per_s > 0:
@@ -244,13 +293,13 @@ class Servo:
 # ──────────────────────────────────────────────────────────────────────── #
 class ServoGroup:
     """
-    四路舵机统一管理
+    多路舵机统一管理（默认 5 路：m0~m3 + m4 夹爪）
 
     使用示例:
         group = ServoGroup(pca, DEFAULT_SERVO_CONFIGS)
-        group.all_home()                          # 所有舵机归中
-        group.set_angles([90, 120, 60, 135])      # 设置四轴角度
-        group.move_smooth([90, 120, 60, 135], steps=50, delay=0.02)
+        group.all_home()                                # 所有舵机归中
+        group.set_angles([135, 135, 135, 135, 90])      # [m0,m1,m2,m3,m4]
+        group.move_smooth([135, 135, 135, 135, 90], steps=50, delay=0.02)
     """
 
     def __init__(self, pca: PCA9685,
@@ -324,7 +373,7 @@ class ServoGroup:
             if c is None:
                 print(f"[ServoGroup] 轴 {i} 无初始角度，先归中")
                 self._servos[i].go_home()
-                current[i] = 135.0
+                current[i] = self._servos[i].current_angle
         time.sleep(0.5)
 
         # 按速度自动计算 steps / delay_s
@@ -377,13 +426,29 @@ def us_to_count_50hz(pulse_us: float) -> int:
 
 
 def print_pwm_table():
-    """打印常用角度对应的 μs 和 count 值（便于调试）"""
-    print(f"{'角度':>8} {'脉宽(μs)':>12} {'count':>8}")
+    """打印 ku.py 标定后的各轴 angle→count 参考表。"""
+    print(f"{'轴':<12} {'角度':>8} {'count':>8}")
     print("-" * 32)
-    for deg in [0, 30, 45, 60, 90, 135, 180, 225, 270]:
-        us    = angle_to_us_rds3235(deg)
-        count = us_to_count_50hz(us)
-        print(f"{deg:>7}°  {us:>10.1f}   {count:>6}")
+    period_us = 20000.0
+
+    class _FakePCA:
+        @staticmethod
+        def count_to_us(count):
+            return count * period_us / 4096
+
+        @staticmethod
+        def us_to_count(us):
+            return round(us * 4096 / period_us)
+
+    for cfg in DEFAULT_SERVO_CONFIGS:
+        servo = Servo(_FakePCA(), cfg)
+        samples = [cfg.min_angle]
+        if cfg.home_angle is not None and cfg.home_angle not in samples:
+            samples.append(cfg.home_angle)
+        if cfg.max_angle not in samples:
+            samples.append(cfg.max_angle)
+        for deg in samples:
+            print(f"{cfg.name:<12} {deg:>7.1f}°  {servo.angle_to_count(deg):>6}")
 
 
 if __name__ == "__main__":

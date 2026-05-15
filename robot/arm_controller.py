@@ -1,14 +1,23 @@
 """
 四轴机械臂高层控制器
 
-当前状态：
-    运动学模块（kinematics.py）依赖连杆尺寸，尚待填入。
-    本文件提供完整的控制架构和接口定义：
-      - 硬件初始化（CH347 → PCA9685 → 舵机）
-      - 关节空间直接控制（set_joints）
-      - 笛卡尔空间控制接口（move_to_xyz，IK 填入后自动生效）
-      - 手眼标定所需的位姿获取（get_tcp_pose，基于 FK）
-      - 安全停止与上电流程
+连杆与关节定义以 datasheet/机械臂示意图草图.jpg 为准：
+    m0          水平旋转（绕 Z 轴）
+    L0 = 70 mm  离地高度（静态，m0 轴 → m1 轴）
+    m1          肩关节俯仰
+    L1 = 158 mm 大臂（m1 → m2）
+    m2          肘关节俯仰
+    L2 = 155 mm 小臂（m2 → m3）
+    m3          腕关节俯仰
+    L3 = 160 mm 腕杆（m3 → m4/爪尖，抓取时保持竖直）
+    m4          夹爪开合（180°，不参与 FK/IK）
+
+本文件提供：
+    - 硬件初始化（CH347 → PCA9685 → 舵机）
+    - 关节空间直接控制（set_joints）
+    - 笛卡尔空间控制接口（move_to_xyz，IK 填入后自动生效）
+    - 手眼标定所需的位姿获取（get_tcp_pose，基于 FK）
+    - 安全停止与上电流程
 """
 from __future__ import annotations
 import time
@@ -32,13 +41,24 @@ class ArmController:
     使用示例:
         with ArmController() as arm:
             arm.home()                          # 归零位
-            arm.set_joints([90, 90, 90, 135])   # 关节角控制
+            arm.set_joints([90, 90, 120, 60])   # [水平角, ABC-90, BCD, CDE]
             arm.move_to_xyz(200, 0, 150)        # 笛卡尔控制（需IK）
             R, t = arm.get_tcp_pose()           # 获取末端位姿（手眼标定用）
     """
 
-    # 归零位角度（所有舵机中位，根据实际调整）
-    HOME_ANGLES = [135.0, 135.0, 135.0, 135.0]
+    # 归零位角度来自 ku.py 中 fastput 的安全姿态：put(yaw, 90, 120, 60)
+    # m4 夹爪归位由 HOME_GRIPPER 单独指定
+    HOME_ANGLES  = [90.0, 90.0, 120.0, 60.0]
+    HOME_GRIPPER = 180.0  # ku.py: zhuazi(True)≈张开，作为默认安全位
+
+    # 几何约束来自 mathtest.py：
+    # A=(0,0,0), B=(0,0,L0), E 为 TCP，D 在 E 正上方/正下方 L3。
+    # 这里的角是机械结构内角，不是直接写给舵机的增量角。
+    GEOMETRY_LIMITS = {
+        "ABC": (90.0, 180.0),
+        "BCD": (38.0, 180.0),
+        "CDE": (38.0, 180.0),
+    }
 
     def __init__(self,
                  device_index: int = 0,
@@ -54,9 +74,18 @@ class ArmController:
         self._pca:    PCA9685    | None = None
         self._servos: ServoGroup | None = None
 
-        # 连杆参数（待填入，单位 mm）
-        # 填入后 FK/IK 自动生效
-        self._link_lengths: list[float] | None = None  # [L1, L2, L3, L4]
+        # 夹爪当前角度（命令值），与 set_joints 解耦：
+        # set_joints 只改 m0~m3；set_gripper 只改 m4
+        self._gripper_angle: float = self.HOME_GRIPPER
+
+        # 连杆参数（mm），依据 datasheet/机械臂示意图草图.jpg 与 mathtest.py：
+        #   L0 = 70   离地高度（m0 水平旋转轴 → m1 俯仰轴），静态，不随关节转动
+        #   L1 = 158  大臂（m1 → m2），随 m1 俯仰
+        #   L2 = 155  小臂（m2 → m3），随 m1+m2 俯仰
+        #   L3 = 160  腕部→爪尖（m3 → m4），抓取时保持竖直
+        # 可通过 set_link_lengths() 在运行时覆盖
+        self._link_lengths: list[float] = [70.0, 158.0, 155.0, 160.0]
+        self._last_ik_solution: dict | None = None
 
         self._is_ready = False
 
@@ -67,7 +96,7 @@ class ArmController:
         """建立硬件连接"""
         print("[Arm] 正在连接硬件...")
         self._i2c = CH347I2C(device_index=self._dev_idx,
-                             speed=CH347I2C.SPEED_FAST)
+                             speed=CH347I2C.SPEED_STD)
         self._i2c.open()
 
         self._pca = PCA9685(self._i2c,
@@ -89,51 +118,93 @@ class ArmController:
         self._is_ready = False
         print("[Arm] 硬件已断开")
 
-    def set_link_lengths(self, L1: float, L2: float, L3: float, L4: float):
+    def set_link_lengths(self, L0: float, L1: float, L2: float, L3: float):
         """
-        设置连杆长度（mm），设置后 FK/IK 立即生效
+        设置连杆长度（mm），立即影响 FK/IK
 
-        Args:
-            L1: 底座到关节2的高度
-            L2: 大臂长度（关节2到关节3）
-            L3: 小臂长度（关节3到关节4）
-            L4: 末端工具长度（关节4到TCP）
+        命名与 datasheet/机械臂示意图草图.jpg 一致：
+
+            L0: 离地高度，m0 水平旋转轴 → m1 俯仰轴（静态，不随关节转动）
+            L1: 大臂长度，m1 → m2（随 m1 俯仰）
+            L2: 小臂长度，m2 → m3（随 m1+m2 俯仰）
+            L3: 腕部到爪尖长度，m3 → m4（随 m1+m2+m3 俯仰）
+
+        注：m4（夹爪）仅作开合控制，不参与运动学链
         """
-        self._link_lengths = [L1, L2, L3, L4]
-        print(f"[Arm] 连杆参数已设置: L1={L1} L2={L2} L3={L3} L4={L4} mm")
+        self._link_lengths = [L0, L1, L2, L3]
+        print(f"[Arm] 连杆参数已设置: L0={L0} L1={L1} L2={L2} L3={L3} mm")
 
     # ------------------------------------------------------------------ #
     #  关节空间控制                                                          #
     # ------------------------------------------------------------------ #
+    def _assemble_full_angles(self, arm4: list[float]) -> list[float]:
+        """将 4 元素臂角 + 当前夹爪角拼成 5 元素完整指令（m0~m4）"""
+        if len(arm4) != 4:
+            raise ValueError(f"arm 角度应为 4 个 (m0~m3)，收到 {len(arm4)}")
+        return list(arm4) + [self._gripper_angle]
+
     def home(self, smooth: bool = True):
-        """运动到归零位"""
+        """运动到归零位（臂 + 夹爪）"""
         print("[Arm] 回归零位...")
+        full = self._assemble_full_angles(self.HOME_ANGLES)
+        # home 同时把夹爪送到中位
+        full[4] = self.HOME_GRIPPER
+        self._gripper_angle = self.HOME_GRIPPER
         if smooth:
-            self._servos.move_smooth(self.HOME_ANGLES, steps=60, delay_s=0.02)
+            self._servos.move_smooth(full, steps=60, delay_s=0.02)
         else:
-            self._servos.set_angles(self.HOME_ANGLES)
+            self._servos.set_angles(full)
         print("[Arm] 已到达零位")
 
     def set_joints(self, angles_deg: list[float],
                    smooth: bool = False,
                    steps: int = 40,
-                   delay_s: float = 0.02):
+                   delay_s: float = 0.02,
+                   check_limit: bool = True):
         """
-        关节角度控制（直接控制四个舵机）
+        关节空间控制（仅臂 4 轴，不改变夹爪）
 
         Args:
-            angles_deg: [J1, J2, J3, J4] 各关节角度 (°)
-            smooth: 是否平滑插值运动
+            angles_deg: [水平角, ABC-90, BCD, CDE]，与 ku.put(a,b,c,d) 一致
+            smooth:     是否平滑插值运动
+            check_limit: 是否检查 ServoConfig 软限位。IK 已按几何约束筛选，
+                         笛卡尔运动会关闭旧软限位以免重复截断。
         """
         self._check_ready()
+        full = self._assemble_full_angles(angles_deg)
         if smooth:
-            self._servos.move_smooth(angles_deg, steps=steps, delay_s=delay_s)
+            self._servos.move_smooth(full, steps=steps, delay_s=delay_s,
+                                     check_limit=check_limit)
         else:
-            self._servos.set_angles(angles_deg)
+            self._servos.set_angles(full, check_limit=check_limit)
 
     def get_joints(self) -> list[float | None]:
-        """获取当前关节角度（命令值，无传感器反馈）"""
-        return self._servos.get_angles()
+        """获取当前臂关节角度 [水平角, ABC-90, BCD, CDE]（命令值，无反馈）"""
+        return self._servos.get_angles()[:4]
+
+    # ------------------------------------------------------------------ #
+    #  夹爪控制（m4，独立于运动学链）                                         #
+    # ------------------------------------------------------------------ #
+    def set_gripper(self, angle_deg: float, smooth: bool = False,
+                    steps: int = 20, delay_s: float = 0.02):
+        """
+        设置夹爪（m4）开合角度
+
+        Args:
+            angle_deg: 0~180°，具体开/合方向需装机后标定
+            smooth:    是否平滑运动
+        """
+        self._check_ready()
+        gripper = self._servos[4]
+        if smooth:
+            gripper.move_smooth(angle_deg, steps=steps, delay_s=delay_s)
+        else:
+            gripper.set_angle(angle_deg)
+        self._gripper_angle = angle_deg
+
+    def get_gripper(self) -> float:
+        """获取夹爪当前角度（命令值）"""
+        return self._gripper_angle
 
     # ------------------------------------------------------------------ #
     #  正运动学 FK                                                          #
@@ -142,53 +213,60 @@ class ArmController:
         """
         正运动学：关节角度 → 末端位姿 (R, t)
 
-        ⚠️  需要先调用 set_link_lengths() 设置连杆参数
+        连杆与关节定义（见 datasheet/机械臂示意图草图.jpg）：
+            m0: 底座绕 Z 轴水平旋转，角度定义同 ku.putDJ0
+            m1: ∠ABC - 90°，即 BC 相对水平面的俯仰角
+            m2: ∠BCD，结构内角
+            m3: ∠CDE，结构内角
+            m4: 夹爪（180° 开合，不参与 FK）
 
-        四轴平面机械臂（SCARA/竖直平面型）的简化 FK：
-            - J1: 底座绕 Z 轴旋转（水平面）
-            - J2: 大臂绕 Y 轴俯仰
-            - J3: 小臂绕 Y 轴俯仰
-            - J4: 末端/夹爪（不影响 TCP 位置，影响朝向）
+        Args:
+            angles_deg: [水平角, ABC-90, BCD, CDE]，与 ku.solve()/ku.put() 一致
 
         Returns:
             R_gripper2base: (3,3) 旋转矩阵
             t_gripper2base: (3,)  平移向量 mm
         """
-        if self._link_lengths is None:
-            raise RuntimeError(
-                "连杆长度未设置，请先调用 set_link_lengths(L1, L2, L3, L4)"
-            )
+        L0, L1, L2, L3 = self._link_lengths
 
-        L1, L2, L3, L4 = self._link_lengths
-        j1, j2, j3, j4 = [np.radians(a - 135.0) for a in angles_deg]
-        # 角度偏置：以 135°（中位）为 0，转为标准关节角
+        yaw_deg, abc_minus_90, bcd_deg, cde_deg = [float(a) for a in angles_deg]
 
-        # ── 水平旋转（J1 绕 Z 轴）──────────────────────────────────────
-        c1, s1 = np.cos(j1), np.sin(j1)
-        R_z = np.array([[ c1, -s1, 0],
-                         [ s1,  c1, 0],
+        # ku.py 的角度定义：
+        #   m1 = ABC - 90 = BC 绝对俯仰角
+        #   m2 = BCD      = 结构内角，转为相对俯仰角时为 BCD - 180
+        #   m3 = CDE      = 结构内角，转为相对俯仰角时为 CDE - 180
+        m0 = np.radians(yaw_deg)
+        m1 = np.radians(abc_minus_90)
+        m2 = np.radians(bcd_deg - 180.0)
+        m3 = np.radians(cde_deg - 180.0)
+
+        # ── 水平旋转（m0 绕 Z 轴）────────────────────────────────────
+        c0, s0 = np.cos(m0), np.sin(m0)
+        R_z = np.array([[ c0, -s0, 0],
+                         [ s0,  c0, 0],
                          [  0,   0, 1]])
 
-        # ── 竖直平面内运动（J2, J3 在 XZ 平面展开）──────────────────
-        # 末端在水平投影面的合计角度
-        alpha = j2 + j3  # 小臂末端相对于水平面的角度
+        # ── 竖直平面内链式俯仰（m1 → m2 → m3）───────────────────────
+        # 每段连杆相对于水平面的绝对俯仰角
+        a1 = m1
+        a2 = m1 + m2
+        a3 = m1 + m2 + m3
 
-        # TCP 在 J1 坐标系中的坐标（竖直平面）
-        x_reach = (L2 * np.cos(j2)
-                   + L3 * np.cos(j2 + j3)
-                   + L4 * np.cos(alpha))
-        z_height = (L1
-                    + L2 * np.sin(j2)
-                    + L3 * np.sin(j2 + j3)
-                    + L4 * np.sin(alpha))
+        # TCP 在 m0 旋转后坐标系（竖直平面）中的位置
+        x_reach  = (L1 * np.cos(a1)
+                    + L2 * np.cos(a2)
+                    + L3 * np.cos(a3))
+        z_height = (L0                        # 静态离地高度
+                    + L1 * np.sin(a1)
+                    + L2 * np.sin(a2)
+                    + L3 * np.sin(a3))
 
-        # 旋转到基坐标系（乘 J1 的水平旋转）
+        # 变换到基坐标系
         t = R_z @ np.array([x_reach, 0.0, z_height])
 
-        # ── 末端姿态（J1+J2+J3+J4 的合成）────────────────────────────
-        total_pitch = j2 + j3 + j4
+        # ── 末端姿态：m0 水平旋转 × (m1+m2+m3) 总俯仰 ────────────────
+        total_pitch = a3
         cp, sp = np.cos(total_pitch), np.sin(total_pitch)
-        # 绕 Y 轴的俯仰旋转矩阵
         R_pitch = np.array([[ cp, 0, sp],
                              [  0, 1,  0],
                              [-sp, 0, cp]])
@@ -223,7 +301,8 @@ class ArmController:
         """
         笛卡尔空间控制：将末端移动到目标坐标
 
-        ⚠️  需要先实现 inverse_kinematics() 并设置连杆参数
+        使用 inverse_kinematics() 将目标点转换为 [水平角, ABC-90, BCD, CDE]，
+        连杆参数默认来自当前机械臂草图，也可通过 set_link_lengths() 覆盖。
 
         Args:
             x_mm, y_mm, z_mm: 目标位置（机器人基坐标系，mm）
@@ -239,7 +318,7 @@ class ArmController:
             print(f"[Arm] 目标点 ({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}) 不可达")
             return False
 
-        self.set_joints(angles, smooth=smooth)
+        self.set_joints(angles, smooth=smooth, check_limit=False)
         return True
 
     def inverse_kinematics(self, x_mm: float, y_mm: float,
@@ -247,37 +326,181 @@ class ArmController:
         """
         逆运动学：目标坐标 → 关节角度
 
-        ⚠️  待实现：连杆尺寸确定后在 kinematics.py 中完成，
-            然后在此处调用。
+        采用 mathtest.py 中的草图模型：
+            A = (0,0,0)
+            B = (0,0,L0)
+            |BC| = L1, |CD| = L2, |DE| = L3
+            A/B/C/D/E 共竖直平面，抓取时 DE 垂直工作平面。
+
+        返回值与 ku.solve() 传给 ku.put(a,b,c,d) 的角度数组一致：
+            m0 = 底座水平偏航角
+            m1 = ∠ABC - 90°
+            m2 = ∠BCD
+            m3 = ∠CDE
+
+        几何内角限位使用 GEOMETRY_LIMITS，舵机硬范围来自 DEFAULT_SERVO_CONFIGS。
 
         Returns:
-            [J1, J2, J3, J4] 各关节角度 (°)，不可达返回 None
+            [水平角, ABC-90, BCD, CDE]，不可达返回 None
         """
-        if self._link_lengths is None:
-            raise RuntimeError(
-                "连杆长度未设置，IK 无法计算。\n"
-                "请先调用 set_link_lengths(L1, L2, L3, L4)"
+        candidates = self._inverse_kinematics_candidates(x_mm, y_mm, z_mm)
+        if not candidates:
+            self._last_ik_solution = None
+            return None
+
+        reference = self._current_or_home_angles()
+
+        def score(item: dict) -> float:
+            angles = item["servo_angles"]
+            motion_cost = sum((a - b) ** 2 for a, b in zip(angles, reference))
+            # 正常桌面抓取优先让 D 在 E 上方，即爪尖/腕杆竖直向下。
+            tool_penalty = 0.0 if item["tool_direction"] == "down" else 100000.0
+            return motion_cost + tool_penalty
+
+        best = min(candidates, key=score)
+        self._last_ik_solution = best
+        return list(best["servo_angles"])
+
+    def get_last_ik_solution(self) -> dict | None:
+        """返回最近一次 IK 选中的候选解，便于调试几何角和构型。"""
+        return self._last_ik_solution
+
+    def _inverse_kinematics_candidates(self, x_mm: float, y_mm: float,
+                                       z_mm: float) -> list[dict]:
+        """枚举所有满足几何约束和舵机硬范围的 IK 候选解。"""
+        L0, L1, L2, L3 = self._link_lengths
+        x, y, z = float(x_mm), float(y_mm), float(z_mm)
+        rho = float(np.hypot(x, y))
+        yaw_deg = 0.0 if rho < 1e-8 else float(np.degrees(np.arctan2(y, x)))
+
+        candidates = []
+
+        # tool_sign=+1: D 在 E 上方，DE 竖直向下，适合桌面抓取。
+        # tool_sign=-1: D 在 E 下方，DE 竖直向上，保留为数学候选。
+        for tool_sign in (1.0, -1.0):
+            tool_pitch = -tool_sign * np.pi / 2.0
+            dz_d = z + tool_sign * L3 - L0
+            bd = float(np.hypot(rho, dz_d))
+            if bd < 1e-8:
+                continue
+            if bd < abs(L1 - L2) - 1e-8 or bd > L1 + L2 + 1e-8:
+                continue
+
+            cos_q2 = self._clip_unit(
+                (bd ** 2 - L1 ** 2 - L2 ** 2) / (2.0 * L1 * L2)
             )
+            q2_abs = float(np.arccos(cos_q2))
+            base_to_d = float(np.arctan2(dz_d, rho))
 
-        # ── TODO: 连杆尺寸确定后替换以下占位逻辑 ──────────────────────
-        # 参考实现（平面四轴 IK 草图）：
-        #
-        #   L1, L2, L3, _ = self._link_lengths
-        #   r = np.sqrt(x_mm**2 + y_mm**2)       # 水平距离
-        #   z = z_mm - L1                          # 相对大臂根部高度
-        #   D = (r**2 + z**2 - L2**2 - L3**2) / (2 * L2 * L3)
-        #   if abs(D) > 1: return None             # 超出工作空间
-        #   j3 = np.arctan2(np.sqrt(1 - D**2), D)
-        #   j2 = np.arctan2(z, r) - np.arctan2(L3*np.sin(j3), L2+L3*np.cos(j3))
-        #   j1 = np.arctan2(y_mm, x_mm)
-        #   j4 = 0  # 末端保持水平
-        #   return [np.degrees(j) + 135 for j in [j1, j2, j3, j4]]
-        # ── ────────────────────────────────────────────────────────────
+            for q2 in (q2_abs, -q2_abs):
+                q1 = base_to_d - float(np.arctan2(
+                    L2 * np.sin(q2),
+                    L1 + L2 * np.cos(q2),
+                ))
+                q3 = tool_pitch - (q1 + q2)
 
-        raise NotImplementedError(
-            "IK 未实现，请先确认连杆尺寸。\n"
-            "尺寸确定后取消注释上方代码块并填入 L1~L4。"
-        )
+                geom = self._ik_geometry_from_angles(
+                    x, y, z, rho, tool_sign, q1, q2
+                )
+                if not self._geometry_angles_in_range(geom):
+                    continue
+
+                servo_angles = [
+                    yaw_deg,
+                    geom["angle_ABC_deg"] - 90.0,
+                    geom["angle_BCD_deg"],
+                    geom["angle_CDE_deg"],
+                ]
+                if not self._servo_angles_in_hard_range(servo_angles):
+                    continue
+
+                candidates.append({
+                    "servo_angles": servo_angles,
+                    "geometry_angles": {
+                        "ABC": geom["angle_ABC_deg"],
+                        "BCD": geom["angle_BCD_deg"],
+                        "CDE": geom["angle_CDE_deg"],
+                    },
+                    "points": {
+                        "A": geom["A"],
+                        "B": geom["B"],
+                        "C": geom["C"],
+                        "D": geom["D"],
+                        "E": geom["E"],
+                    },
+                    "tool_direction": "down" if tool_sign > 0 else "up",
+                    "rho": rho,
+                    "BD": bd,
+                })
+
+        return candidates
+
+    def _ik_geometry_from_angles(self, x: float, y: float, z: float,
+                                 rho: float, tool_sign: float,
+                                 q1: float, q2: float) -> dict:
+        """由候选关节角反算 A/B/C/D/E 与 mathtest 中的三个内角。"""
+        L0, L1, L2, L3 = self._link_lengths
+        ux, uy = (1.0, 0.0) if rho < 1e-8 else (x / rho, y / rho)
+
+        c_r = L1 * np.cos(q1)
+        c_z = L0 + L1 * np.sin(q1)
+        d_r = c_r + L2 * np.cos(q1 + q2)
+        d_z = c_z + L2 * np.sin(q1 + q2)
+
+        A = np.array([0.0, 0.0, 0.0])
+        B = np.array([0.0, 0.0, L0])
+        C = np.array([c_r * ux, c_r * uy, c_z])
+        D = np.array([d_r * ux, d_r * uy, d_z])
+        E = np.array([x, y, z])
+
+        # 浮点误差下 D 可能偏离目标半径/高度极小，按约束投影回理论点。
+        D = np.array([x, y, z + tool_sign * L3])
+
+        return {
+            "A": A,
+            "B": B,
+            "C": C,
+            "D": D,
+            "E": E,
+            "angle_ABC_deg": self._angle_between_deg(A - B, C - B),
+            "angle_BCD_deg": self._angle_between_deg(B - C, D - C),
+            "angle_CDE_deg": self._angle_between_deg(C - D, E - D),
+        }
+
+    def _geometry_angles_in_range(self, geom: dict, tol: float = 1e-6) -> bool:
+        for name, (low, high) in self.GEOMETRY_LIMITS.items():
+            value = geom[f"angle_{name}_deg"]
+            if value < low - tol or value > high + tol:
+                return False
+        return True
+
+    def _servo_angles_in_hard_range(self, angles: list[float],
+                                    tol: float = 1e-6) -> bool:
+        for angle, cfg in zip(angles, self._configs[:4]):
+            physical = angle + cfg.offset_deg
+            if physical < cfg.min_angle - tol or physical > cfg.max_angle + tol:
+                return False
+        return True
+
+    def _current_or_home_angles(self) -> list[float]:
+        if self._servos:
+            current = self.get_joints()
+            if all(a is not None for a in current):
+                return [float(a) for a in current]
+        return list(self.HOME_ANGLES)
+
+    @staticmethod
+    def _clip_unit(value: float) -> float:
+        return max(-1.0, min(1.0, float(value)))
+
+    @classmethod
+    def _angle_between_deg(cls, a: np.ndarray, b: np.ndarray) -> float:
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na < 1e-12 or nb < 1e-12:
+            return float("nan")
+        cos_value = cls._clip_unit(float(np.dot(a, b) / (na * nb)))
+        return float(np.degrees(np.arccos(cos_value)))
 
     # ------------------------------------------------------------------ #
     #  安全与辅助                                                            #
@@ -323,10 +546,10 @@ if __name__ == "__main__":
         arm.home()
         time.sleep(1.0)
 
-        print("\n=== J1 底座旋转扫描 ===")
-        for angle in [90, 135, 180, 135]:
-            arm.set_joints([angle, 135, 135, 135])
-            print(f"  J1={angle}°")
+        print("\n=== m0 底座旋转扫描 ===")
+        for angle in [0, 90, 180, 90]:
+            arm.set_joints([angle, 90, 120, 60])
+            print(f"  m0={angle}°")
             time.sleep(0.8)
 
         print("\n测试完成，回归零位")

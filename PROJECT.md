@@ -1,232 +1,278 @@
-# 四轴机械臂视觉系统 (Eye-to-Hand)
+# 四轴机械臂视觉抓取项目
 
-基于 USB UVC 摄像头的视觉处理模块，实现目标检测与像素坐标到机器人基坐标的完整变换链路。
+最后整理：2026-05-16
 
-## 硬件配置
+## 1. 项目目标
 
-| 组件 | 型号 / 规格 |
-|------|-------------|
-| 摄像头 | 1080P / 30fps，USB UVC 协议 |
-| 微控制器接口 | CH347F（USB → I2C） |
-| PWM 驱动器 | PCA9685（12-bit，50Hz） |
-| 舵机 × 4 | RDS3235（270°，500–2500 μs，CCW） |
+本项目用于完成“语音选择目标 → 摄像头识别目标 → 像素坐标转换为机械臂坐标 → 四轴机械臂抓取”的闭环。
 
----
+精简后的正式运行主线是：
 
-## 项目结构
+1. YOLO 识别目标，得到识别框和中心像素坐标。
+2. 使用 `data/calibration/homography.npz` 将像素点转换为工作平面上的机械臂坐标 `x, y`。
+3. 语音模块识别“萝卜 / 纸巾 / 米老鼠”等目标选择指令。
+4. `ArmController.inverse_kinematics()` 根据 `x, y, z` 计算四轴关节角。
+5. `robot/servo.py` 通过 CH347 + PCA9685 输出 PWM count，驱动 m0 到 m4。
 
-```
+标定、训练、HSV 调参、模型验证等维护流程已统一放到 `tools/` 目录，不再混在 `main.py` 里。
+
+## 2. 当前项目进度
+
+| 模块 | 当前状态 | 说明 |
+|---|---|---|
+| 相机采集 | 已完成 | `camera/capture.py` 封装 USB 摄像头、MJPG、曝光和后台取帧 |
+| 相机内参标定 | 已完成 | 已有 `data/calibration/camera_intrinsic.npz` |
+| 单应矩阵标定 | 已完成 | 已有 `data/calibration/homography.npz`，可输出目标平面 `x, y` |
+| YOLO 检测 | 已接入 | `data/models/best.pt` 已存在，类别为 carrot / mickey / tissue |
+| 语音控制 | 已实现 | `robot/voice_controller.py` 使用 Vosk 离线中文识别 |
+| 舵机控制 | 已整理 | `robot/servo.py` 已吸收 `ku.py` 实机跑通的 angle 到 count 映射 |
+| 机械臂 IK/FK | 已实现 | `robot/arm_controller.py` 使用草图连杆尺寸和 `mathtest.py` 几何约束 |
+| 手眼标定 | 工具保留 | 当前主线使用 homography；完整 3D 手眼标定脚本移到 `tools/calibrate_hand_eye.py` |
+| 视觉到抓取闭环 | 待实机联调 | 还需验证坐标系、抓取高度、夹爪开合和放置点 |
+
+注意：homography 输出的 `x, y` 必须和机械臂基坐标系一致。如果当前 homography 的原点还是棋盘格原点，需要重新用机械臂基坐标点做 manual 标定，或增加平移/旋转补偿。
+
+## 3. 精简后项目结构
+
+```text
 vision_system/
-│
-├── config/
-│   └── settings.py              全局配置：相机参数、棋盘格规格、HSV颜色范围、文件路径
-│
+├── main.py                         # 精简运行入口：list_cameras / detect / voice
+├── vision_pipeline.py              # YOLO + homography 运行管道
+├── requirements.txt                # Python 基础依赖
+├── PROJECT.md                      # 当前项目说明
 ├── camera/
-│   └── capture.py               CameraCapture 类
-│                                  open() / release() / read() / read_undistorted()
-│                                  warmup() / save_frame() / live_preview()
-│                                  list_available_cameras()（模块函数）
-│
+│   └── capture.py                  # 摄像头采集封装
 ├── calibration/
-│   ├── camera_calibrator.py     CameraCalibrator 类（相机内参标定）
-│   │                              collect_from_camera()  交互式采集棋盘格图像
-│   │                              calibrate()            计算内参矩阵与畸变系数
-│   │                              save() / load()        保存/加载 .npz 文件
-│   │                              undistort()            对单帧图像去畸变
-│   │
-│   └── hand_eye_calibrator.py   HandEyeCalibrator 类（Eye-to-Hand 手眼标定）
-│                                  add_pose()             添加一组（机械臂位姿，棋盘格观测）
-│                                  calibrate()            调用 cv2.calibrateHandEye
-│                                  save() / load()        保存/加载变换矩阵 T_cam2base
-│
+│   ├── camera_calibrator.py        # 相机内参标定算法，被 tools 调用
+│   └── hand_eye_calibrator.py      # 手眼标定算法，被 tools 调用
+├── config/
+│   └── settings.py                 # 相机、路径、YOLO、HSV、工作平面配置
 ├── detection/
-│   ├── detector.py              目标检测（非深度学习方式）
-│   │   DetectionResult          结果数据类：center_px / bbox / angle_deg / label
-│   │   ArucoDetector            ArUco 标记检测，可选 solvePnP 姿态估计
-│   │   ColorDetector            HSV 颜色阈值检测，内置 CLAHE 光照补偿
-│   │   hsv_tuner()              交互式 HSV 静态图调参工具
-│   │
-│   └── yolo_detector.py         YOLODetector 类（YOLOv8，ultralytics）
-│                                  detect()               返回 DetectionResult 列表
-│                                  detect_with_raw()      同时返回原始 ultralytics 结果
-│                                  draw()                 在图像上绘制检测框
-│                                  get_class_names()      获取模型类别列表
-│
+│   ├── result.py                   # DetectionResult 数据结构
+│   └── yolo_detector.py            # 正式运行使用的 YOLO 检测器
 ├── transform/
-│   └── coordinate_transform.py  坐标变换
-│                                  load_camera_params()   加载内参
-│                                  load_hand_eye_params() 加载外参
-│                                  pixel_to_camera()      像素 → 相机坐标
-│                                  camera_to_robot()      相机 → 机器人基坐标
-│                                  pixel_to_robot()       像素 → 机器人基坐标（直接）
-│                                  compute_homography()   单应矩阵标定（替代手眼标定）
-│                                  pixel_to_robot_homography()  单应矩阵方式变换
-│                                  project_robot_to_pixel()     机器人坐标反投影到像素
-│
+│   └── coordinate_transform.py     # homography / 手眼坐标转换
 ├── robot/
-│   ├── ch347_i2c.py             CH347I2C 类（ctypes 调用 WCH 官方 DLL）
-│   │                              open() / close() / write() / read()
-│   │                              write_reg() / read_reg() / scan()
-│   │
-│   ├── pca9685.py               PCA9685 类（I2C PWM 驱动器）
-│   │                              init()                 初始化，设置 50Hz
-│   │                              set_pwm_count()        按 count 值设置通道
-│   │                              set_pulse_us()         按微秒设置脉宽
-│   │                              set_off()              关闭单通道
-│   │                              set_all_off()          关闭全部通道
-│   │                              us_to_count()          μs ↔ count 换算
-│   │
-│   ├── servo.py                 舵机控制
-│   │   ServoConfig              配置数据类（通道号、角度范围、脉宽范围）
-│   │   Servo                    单舵机：set_angle() / go_home() / power_off()
-│   │   ServoGroup               舵机组：set_angles() / all_home() / move_smooth()
-│   │   angle_to_us_rds3235()    RDS3235 专用角度→脉宽换算函数
-│   │
-│   └── arm_controller.py        ArmController 类（四轴机械臂高层接口）
-│                                  connect() / disconnect()
-│                                  home()                 各轴归零
-│                                  set_joints()           设置各轴角度
-│                                  forward_kinematics()   正运动学（DH 参数）
-│                                  get_tcp_pose()         获取当前末端位姿
-│                                  move_to_xyz()          移动末端到目标坐标
-│                                  inverse_kinematics()   逆运动学（待填入连杆尺寸）
-│                                  emergency_stop()       紧急停止
-│
-├── utils/
-│   └── image_utils.py           图像处理工具函数
-│                                  imread() / imwrite()   支持中文路径
-│                                  imshow() / imshow_multi()
-│                                  crop_roi() / resize_keep_aspect()
-│                                  draw_crosshair() / draw_results_on_image()
-│                                  FPSCounter             帧率计数器类
-│                                  bgr_to_hsv() / apply_clahe()
-│
+│   ├── arm_controller.py           # 机械臂高层控制、FK、IK、抓取运动
+│   ├── servo.py                    # 舵机角度到 PCA9685 count 映射
+│   ├── pca9685.py                  # PCA9685 PWM 驱动
+│   ├── ch347_i2c.py                # CH347 USB-I2C 封装
+│   └── voice_controller.py         # Vosk 语音识别和 TTS 反馈
 ├── tools/
-│   ├── color_detect_live.py     ★ 实时颜色检测 Demo（当前阶段主要工具）
-│   │                              三联窗口：原图 | 掩膜 | 检测结果
-│   │                              HSV 滑条实时调参，支持红色双区间
-│   │                              CLAHE 光照补偿（c 键切换）
-│   │                              s=截图  p=打印HSV参数  r=重置  q=退出
-│   │
-│   ├── collect_dataset.py       训练数据采集（按 Space 拍照）
-│   │                              python tools/collect_dataset.py --class mickey
-│   │
-│   ├── convert_labelme.py       标注格式转换：Labelme JSON → YOLO TXT
-│   │
-│   └── train.py                 YOLOv8 训练脚本
-│                                  python tools/train.py --epochs 100 --model n
-│
-├── data/
-│   ├── calibration/
-│   │   ├── camera_intrinsic.npz    ✅ 已完成（RMS = 0.6685 px）
-│   │   └── hand_eye_extrinsic.npz  ⬜ 待标定
-│   ├── images/                     标定采集图像（calib_000~014.jpg）
-│   └── dataset/                    训练数据集（待填充）
-│       ├── images/train / val
-│       └── labels/train / val
-│
-├── datasheet/
-│   └── RDS3235 Coreless datasheet.pdf
-│
-├── vision_pipeline.py           VisionPipeline 主流水线
-│                                  setup()        初始化相机+检测器+变换
-│                                  run_once()     单次检测，返回带机器人坐标的结果
-│                                  run_loop()     持续运行，带预览窗口
-│
-├── main.py                      CLI 入口
-│                                  --mode list_cameras      列出可用摄像头
-│                                  --mode calibrate_camera  相机内参标定
-│                                  --mode calibrate_hand_eye 手眼标定
-│                                  --mode detect            运行检测管道
-│                                  --mode hsv_tuner         HSV 调参（静态图）
-│
-└── requirements.txt             Python 依赖
+│   ├── README.md                   # tools 文件夹功能和调用说明
+│   ├── calibrate_camera.py         # 相机内参标定入口
+│   ├── calibrate_homography.py     # 单应矩阵 auto/manual/verify
+│   ├── calibrate_hand_eye.py       # 手眼标定入口
+│   ├── hsv_tuner.py                # 单帧 HSV 调参
+│   ├── color_detect_live.py        # 实时 HSV 调试工具
+│   ├── debug_detectors.py          # ArUco / HSV 调试检测器
+│   ├── verify_model.py             # YOLO 实时验证
+│   ├── train.py                    # YOLO 训练入口
+│   ├── collect_dataset.py          # 数据采集
+│   └── convert_labelme.py          # Labelme 转 YOLO
+└── data/
+    ├── calibration/
+    │   ├── camera_intrinsic.npz    # 相机内参
+    │   └── homography.npz          # 像素到机械臂平面坐标
+    └── models/
+        ├── best.pt                 # 当前 YOLO 模型
+        ├── dataset.yaml            # 类别和数据集说明
+        └── vosk-model-small-cn/    # 语音模型，使用 voice 时需要
 ```
 
----
+## 4. 主要模块说明
 
-## 依赖安装
+| 路径 | 作用 |
+|---|---|
+| `main.py` | 正式运行入口，只保留 `list_cameras`、`detect`、`voice` |
+| `vision_pipeline.py` | 只做 YOLO 检测、homography 坐标转换和预览显示 |
+| `detection/result.py` | 检测结果数据类，避免 YOLO 依赖调试检测器 |
+| `detection/yolo_detector.py` | 加载 `best.pt`，输出识别框、中心点、类别和置信度 |
+| `tools/debug_detectors.py` | ArUco、HSV 颜色检测已移出正式路径，仅用于调试 |
+| `tools/README.md` | `tools/` 下每个脚本的功能和调用方式 |
+| `transform/coordinate_transform.py` | 加载相机内参和 homography，输出 `[x, y, z]` |
+| `robot/arm_controller.py` | IK/FK、home、move_to_xyz、夹爪控制、急停 |
+| `robot/servo.py` | 来自 `ku.py` 的实机 PWM count 映射 |
 
-```bash
-pip install -r requirements.txt
+## 5. 机械臂模型和舵机约定
+
+机械臂连杆尺寸来自草图和 `mathtest.py`：
+
+| 连杆 | 长度 | 含义 |
+|---|---:|---|
+| `L0` | 70 mm | 底座 m0 到肩关节 m1 的静态高度 |
+| `L1` | 158 mm | 大臂，m1 到 m2 |
+| `L2` | 155 mm | 小臂，m2 到 m3 |
+| `L3` | 160 mm | 腕部到爪尖，m3 到 m4 |
+
+`ArmController.inverse_kinematics()` 输出角度格式：
+
+```text
+[m0 水平角, m1 = ABC - 90, m2 = BCD, m3 = CDE]
 ```
 
-GPU 加速训练（可选，需 NVIDIA 显卡）：
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+舵机映射来自 `ku.py` 中已经跑通的控制函数：
+
+| 轴 | 通道 | 角度范围 | count 映射来源 |
+|---|---:|---|---|
+| m0 底座旋转 | 0 | 0 到 180 | `25/18 * angle + 150` |
+| m1 肩关节 | 1 | 0 到 90 | `-13/9 * angle + 380` |
+| m2 肘关节 | 2 | 38 到 180 | `-205/142 * angle + 550` |
+| m3 腕关节 | 3 | 38 到 180 | `10/7 * angle + 163` |
+| m4 夹爪 | 4 | 0 到 180 | 210 到 280 |
+
+## 6. 常用运行命令
+
+进入项目目录：
+
+```powershell
+conda activate new_env
+cd E:\PYproject\vision_system
 ```
 
-CH347F 驱动：从 [WCH 官网](https://www.wch.cn/products/CH347.html) 下载并安装 DLL，放置于系统 PATH 或项目根目录。
+列出摄像头：
 
----
-
-## 当前进度
-
-| 模块 | 状态 |
-|------|------|
-| 相机采集 | ✅ 完成 |
-| 相机内参标定 | ✅ 完成（RMS = 0.6685 px） |
-| 颜色检测（HSV + CLAHE） | ✅ 完成 |
-| 实时检测 Demo | ✅ 完成 |
-| 手眼标定 | ⬜ 待完成（需机械臂连杆尺寸） |
-| 坐标变换 | ⬜ 待标定数据 |
-| 机械臂硬件联调 | ⬜ 待确认连杆尺寸后补全 IK |
-| YOLO 自定义训练 | ⬜ 待采集 tissue / mickey 数据集 |
-
----
-
-## 快速上手（当前阶段）
-
-**1. 测试摄像头**
-```bash
-python camera/capture.py
+```powershell
+python main.py --mode list_cameras
 ```
 
-**2. 实时颜色检测调参**
-```bash
-# 红色目标
-python tools/color_detect_live.py --color red
+运行 YOLO 检测和坐标显示：
 
-# 橙色目标（胡萝卜）
-python tools/color_detect_live.py --color orange
+```powershell
+python main.py --mode detect --detect yolo
 ```
 
-调参完成后按 `p` 键打印 HSV 参数，将结果复制到 `config/settings.py` 的 `COLOR_RANGES` 字典中保存。
+语音控制抓取：
 
-**3. 重新进行相机内参标定（如需要）**
-```bash
-python main.py --mode calibrate_camera
+```powershell
+python main.py --mode voice
 ```
 
----
+相机内参标定：
 
-## 坐标系说明
-
-```
-像素坐标 (u, v)
-    │  camera_matrix（内参）
-    ▼
-相机坐标 (Xc, Yc, Zc)   ← Zc 由工作平面约束 (WORK_PLANE_Z_MM)
-    │  T_cam2base（手眼标定 / 单应矩阵）
-    ▼
-机器人基坐标 (X, Y, Z) [mm]
-    │  inverse_kinematics()
-    ▼
-各轴关节角度 → PCA9685 → RDS3235 舵机
+```powershell
+python tools/calibrate_camera.py
 ```
 
----
+单应矩阵标定和验证：
 
-## HSV 颜色参考
+```powershell
+python tools/calibrate_homography.py --mode auto
+python tools/calibrate_homography.py --mode manual
+python tools/calibrate_homography.py --mode verify
+```
 
-| 颜色 | H 范围 | 备注 |
-|------|--------|------|
-| 红色 | 0–10 和 170–180 | 需双区间（色环跨0°） |
-| 橙色 | 5–25 | 胡萝卜典型范围 |
-| 黄色 | 20–40 | |
-| 绿色 | 40–80 | |
-| 蓝色 | 100–130 | |
-| 紫色 | 125–155 | |
+YOLO 模型验证：
 
-> S（饱和度）建议下限 ≥ 60，过低会检测到白色/灰色区域。
-> V（明度）范围视实际光照调整；开启 CLAHE 后阈值适应性更强。
+```powershell
+python tools/verify_model.py
+```
+
+HSV 调参：
+
+```powershell
+python tools/hsv_tuner.py
+python tools/color_detect_live.py --mode multi
+```
+
+完整 `tools/` 说明见：
+
+```text
+tools/README.md
+```
+
+## 7. 迁移时必须带走的内容
+
+运行代码必须迁移：
+
+```text
+main.py
+vision_pipeline.py
+requirements.txt
+camera/
+calibration/
+config/
+detection/
+robot/
+tools/
+transform/
+utils/
+```
+
+标定结果必须迁移：
+
+```text
+data/calibration/camera_intrinsic.npz
+data/calibration/homography.npz
+```
+
+YOLO 运行必须迁移：
+
+```text
+data/models/best.pt
+data/models/dataset.yaml
+```
+
+语音功能需要迁移：
+
+```text
+data/models/vosk-model-small-cn/
+```
+
+机械臂硬件控制需要迁移或重新安装：
+
+```text
+CH347DLL.DLL
+CH347DLLA64.DLL
+WCH CH347 驱动
+```
+
+如果相机位置、焦距、分辨率、工作台或坐标系改变，`camera_intrinsic.npz` 和 `homography.npz` 不能直接复用，需要重新标定。
+
+## 8. 可以不迁移或按需迁移的内容
+
+| 内容 | 是否需要 | 说明 |
+|---|---|---|
+| `.git/` | 可不迁移 | 除非需要保留提交历史 |
+| `.vscode/`、`vision_system.code-workspace` | 可不迁移 | 编辑器配置 |
+| `__pycache__/`、`*.pyc` | 不需要 | Python 会自动生成 |
+| `data/models/train/` | 可不迁移 | 训练过程输出，运行只需要 `best.pt` |
+| `data/images/` 原始数据集 | 运行不需要 | 只有重新训练或补数据时才需要 |
+| `yolov8n.pt`、`yolo26n.pt` | 可选 | 预训练或备用模型 |
+| `verify_snapshot.jpg` | 不需要 | 调试截图 |
+| `ku.py` | 可选 | 手写硬件测试脚本，正式逻辑已整理进 `robot/servo.py` |
+| `mathtest.py` | 可选 | 数学推导脚本，IK 已整理进 `robot/arm_controller.py` |
+| `20060515test.py` | 可选 | 临时测试脚本 |
+| `datasheet/` | 建议迁移 | 不影响运行，但硬件接线和机构复核时有用 |
+| `ROS2_MIGRATION.md` | 可选 | 后续迁 ROS2 时使用 |
+| `项目可行性分析报告.md`、`GIT提交流程.md` | 可选 | 文档资料 |
+
+## 9. 下一步工作
+
+1. 确认 homography 输出坐标是否已经是机械臂基坐标系。
+   如果不是，建议用 `tools/calibrate_homography.py --mode manual`，输入相对于机械臂底座的真实坐标重新标定。
+
+2. 做“视觉坐标 → IK 可达性”测试。
+   对 YOLO 输出的目标中心打印 `(x, y, z)` 和 IK 角度，确认目标都在机械臂可达范围内。
+
+3. 做空载运动测试。
+   先不夹取，只让机械臂移动到目标上方 `approach_z`，确认不会撞桌面、不会撞自身。
+
+4. 标定抓取高度和夹爪角度。
+   当前代码里 `approach_z=60`、抓取 `z=0`、夹爪 `0/180` 是初始值，需要按实际物体高度调。
+
+5. 固定放置点和失败策略。
+   当前示例放置点是 `(200, 0, 80)`，需要确定真实安全放置区。
+
+6. 实测语音闭环。
+   确认麦克风、Vosk 模型、语音关键词、目标类别名和 YOLO 模型类别一致。
+
+## 10. 本次结构精简记录
+
+1. `main.py` 精简为运行入口，只保留 `list_cameras`、`detect`、`voice`。
+2. `vision_pipeline.py` 精简为 YOLO + homography，不再混入 ArUco、HSV、手眼标定逻辑。
+3. 新增 `detection/result.py`，让 `DetectionResult` 从调试检测器中拆出来。
+4. `detection/detector.py` 移动为 `tools/debug_detectors.py`，其中的 ArUco、HSV 只作为调试工具保留。
+5. 新增 `tools/calibrate_camera.py`、`tools/calibrate_hand_eye.py`、`tools/hsv_tuner.py`。
+6. 新增 `tools/README.md`，说明 `tools/` 内脚本功能和调用方式。
+7. `CoordinateTransform.pixel_to_robot_homography()` 支持在有相机内参时先对像素点去畸变，再做 homography 转换。

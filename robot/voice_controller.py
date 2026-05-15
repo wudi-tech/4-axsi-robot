@@ -3,11 +3,16 @@
 ============
 基于 Vosk 的离线中文语音识别，独立后台线程持续监听麦克风，
 匹配关键词后将动作名称写入队列，主循环按需取用。
-支持 pyttsx3 语音反馈（TTS），抓取成功后可调用 speak("真棒") 给出奖励。
+支持 pyttsx3 语音反馈（TTS），用于操作确认（如"已归零"）。
+
+匹配策略（两级）：
+    1) 字面子串匹配（长词优先）——精确、零开销
+    2) 拼音子串匹配（无声调）——处理谐音，如「萝卜」↔「罗波」「箩卜」
+       需要 pypinyin；未安装时自动降级为仅字面匹配
 
 安装依赖
 --------
-    pip install vosk pyaudio pyttsx3
+    pip install vosk pyaudio pyttsx3 pypinyin
 
 下载中文小模型（约 50 MB，够用于固定指令识别）
     https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
@@ -28,8 +33,15 @@
             arm.emergency_stop()
             vc.speak("已停止")
         elif cmd == "pick_carrot":
-            success = pipeline.pick("carrot")
-            vc.speak("真棒" if success else "抓取失败")
+            pipeline.pick("carrot")     # 执行抓取
+            # 等待用户反馈（人对机械臂说"真棒"或"不对"）
+            fb = vc.get_command(block=True, timeout=10.0)
+            if fb == "feedback_good":
+                print("抓取成功，继续下一个")
+            elif fb == "feedback_bad":
+                print("抓取失败，重试或跳过")
+        elif cmd == "feedback_good":
+            pass   # 由抓取流程中消费，此处忽略
 
     vc.stop()
 
@@ -41,8 +53,10 @@
     "暂停"                     → "pause"
     "萝卜"                     → "pick_carrot"
     "纸巾"                     → "pick_tissue"
-    "米老鼠"                   → "pick_mickey"
+    "米老鼠" / "老鼠"          → "pick_mickey"     （"米老鼠"常被拆成"米"+"老鼠"）
     "状态"                     → "status"
+    "真棒"                     → "feedback_good"   （人对机械臂说，表示抓对了）
+    "不对"                     → "feedback_bad"    （人对机械臂说，表示抓错了）
 """
 from __future__ import annotations
 import json
@@ -51,6 +65,21 @@ import queue
 import sys
 import threading
 import time
+
+# ─── 拼音归一化（可选依赖：pypinyin）────────────────────────────────────── #
+try:
+    from pypinyin import lazy_pinyin, Style
+    _PINYIN_AVAILABLE = True
+
+    def _to_pinyin(text: str) -> str:
+        """中文 → 无声调拼音串，非中文字符原样保留。"""
+        return "".join(lazy_pinyin(text, style=Style.NORMAL))
+except ImportError:
+    _PINYIN_AVAILABLE = False
+
+    def _to_pinyin(text: str) -> str:
+        return text   # 降级：等同于字面比较
+
 
 # ─── 默认内置指令表 ────────────────────────────────────────────────────── #
 # key: 识别到的关键词（子串匹配）  value: 动作名称（传给主循环）
@@ -67,8 +96,12 @@ DEFAULT_COMMANDS: dict[str, str] = {
     "状态":   "status",
     # 抓取目标
     "米老鼠": "pick_mickey",   # 最长，放最前
+    "老鼠":   "pick_mickey",   # Vosk 常把"米老鼠"拆成"米"+"老鼠"
     "萝卜":   "pick_carrot",
     "纸巾":   "pick_tissue",
+    # 用户反馈（人对机械臂说，非 TTS 输出）
+    "真棒":   "feedback_good",
+    "不对":   "feedback_bad",
 }
 
 # 默认模型路径（相对项目根）
@@ -107,6 +140,10 @@ class VoiceController:
         self._stop_event: threading.Event = threading.Event()
         self._thread: threading.Thread    = None
 
+        # 关键词拼音索引：kw → 无声调拼音串（谐音匹配用，空则跳过）
+        self._pinyin_index: dict[str, str] = {}
+        self._rebuild_pinyin_index()
+
         # 防抖：记录每个 action 上次触发时间
         self._last_trigger: dict[str, float] = {}
 
@@ -127,14 +164,33 @@ class VoiceController:
         commands: {关键词: 动作名称}，例如 {"停止": "stop"}
         """
         self._commands = dict(commands)
+        self._rebuild_pinyin_index()
 
     def add_command(self, keyword: str, action: str):
         """追加单条指令映射"""
         self._commands[keyword] = action
+        self._rebuild_pinyin_index()
+
+    def add_aliases(self, action: str, keywords: list[str]):
+        """
+        为某动作批量追加关键词（谐音/近义词都可以）。
+        例: add_aliases("pick_carrot", ["萝卜", "罗波", "箩卜"])
+        """
+        for kw in keywords:
+            self._commands[kw] = action
+        self._rebuild_pinyin_index()
 
     def remove_command(self, keyword: str):
         """删除单条指令"""
         self._commands.pop(keyword, None)
+        self._rebuild_pinyin_index()
+
+    def _rebuild_pinyin_index(self):
+        """重建关键词拼音索引。pypinyin 不可用时保持空 dict。"""
+        if not _PINYIN_AVAILABLE:
+            self._pinyin_index = {}
+            return
+        self._pinyin_index = {kw: _to_pinyin(kw) for kw in self._commands}
 
     def list_commands(self):
         """打印当前全部指令表"""
@@ -191,10 +247,10 @@ class VoiceController:
     def speak(self, text: str):
         """
         异步播放语音（不阻塞调用方）。
-        抓取成功后调用 vc.speak("真棒") 即可触发奖励音。
+        操作确认时调用 vc.speak("已归零") 即可触发语音确认。
 
         Args:
-            text: 要播放的中文文本，例如 "真棒" / "已归零" / "抓取失败"
+            text: 要播放的中文文本，例如 "已归零" / "已停止"
         """
         if self._tts_engine is None:
             print(f"[语音] TTS 未就绪，跳过播放: {text}")
@@ -333,16 +389,37 @@ class VoiceController:
     # ── 内部：关键词匹配 + 防抖 ───────────────────────────────────────── #
 
     def _dispatch(self, text: str):
-        """在识别文本中查找关键词，命中则入队（带防抖）"""
+        """
+        在识别文本中查找关键词，命中则入队（带防抖）。
+
+        匹配顺序（均按关键词长度从长到短，避免短词误匹配）：
+          1) 字面子串
+          2) 拼音子串（无声调）——处理谐音字，如「罗波」→「萝卜」
+        """
         matched_action = None
         matched_kw     = None
+        matched_via    = ""      # 调试信息：字面 / 谐音
 
-        # 按关键词长度从长到短匹配，避免短词误匹配
-        for kw in sorted(self._commands, key=len, reverse=True):
+        kws_desc = sorted(self._commands, key=len, reverse=True)
+
+        # ── 1) 字面子串匹配 ──────────────────────────────────────────────
+        for kw in kws_desc:
             if kw in text:
                 matched_action = self._commands[kw]
                 matched_kw     = kw
+                matched_via    = "字面"
                 break
+
+        # ── 2) 拼音子串匹配（谐音字兜底）────────────────────────────────
+        if matched_action is None and self._pinyin_index:
+            text_py = _to_pinyin(text)
+            for kw in kws_desc:
+                kw_py = self._pinyin_index.get(kw, "")
+                if kw_py and kw_py in text_py:
+                    matched_action = self._commands[kw]
+                    matched_kw     = kw
+                    matched_via    = "谐音"
+                    break
 
         if matched_action is None:
             return
@@ -356,7 +433,7 @@ class VoiceController:
 
         self._last_trigger[matched_action] = now
         self._cmd_queue.put(matched_action)
-        print(f"[语音] 指令入队: 「{matched_kw}」→ {matched_action}")
+        print(f"[语音] 指令入队: 「{matched_kw}」[{matched_via}] → {matched_action}")
 
 
 # ─── 便捷函数：列出所有麦克风设备 ─────────────────────────────────────── #
@@ -411,18 +488,26 @@ if __name__ == "__main__":
             cmd = vc.get_command()
             if cmd:
                 print(f"\n>>> 触发动作: [{cmd}]")
-                # 模拟抓取成功反馈
                 if cmd.startswith("pick_"):
                     target = {"pick_carrot": "萝卜",
                                "pick_tissue": "纸巾",
                                "pick_mickey": "米老鼠"}.get(cmd, "目标")
                     vc.speak(f"正在抓取{target}")
                     time.sleep(1.5)   # 模拟抓取耗时
-                    vc.speak("真棒")  # 奖励反馈
+                    print("  等待用户反馈（说\"真棒\"或\"不对\"）...")
+                    fb = vc.get_command(block=True, timeout=10.0)
+                    if fb == "feedback_good":
+                        vc.speak("收到，继续下一个")
+                    elif fb == "feedback_bad":
+                        vc.speak("收到，跳过该目标")
+                    else:
+                        print("  未收到反馈，超时")
                 elif cmd == "home":
                     vc.speak("已归零")
                 elif cmd == "stop":
                     vc.speak("已停止")
+                elif cmd.startswith("feedback_"):
+                    pass  # 反馈指令由抓取流程中消费，独立出现时忽略
                 print()
             time.sleep(0.05)
     except KeyboardInterrupt:

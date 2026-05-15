@@ -21,7 +21,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config.settings import WORK_PLANE_Z_MM, HAND_EYE_CALIB_FILE, CAMERA_CALIB_FILE
+from config.settings import (
+    WORK_PLANE_Z_MM,
+    HAND_EYE_CALIB_FILE,
+    CAMERA_CALIB_FILE,
+    HOMOGRAPHY_FILE,
+)
 
 
 class CoordinateTransform:
@@ -220,7 +225,7 @@ class CoordinateTransform:
         print(f"[Transform] 单应矩阵计算完成，内点: {inliers}/{len(robot_points)}")
         return H
 
-    def save_homography(self, path: str):
+    def save_homography(self, path: str = HOMOGRAPHY_FILE):
         """保存单应矩阵"""
         if self.homography_matrix is None:
             raise RuntimeError("尚未计算单应矩阵")
@@ -228,24 +233,42 @@ class CoordinateTransform:
         np.savez(path, homography=self.homography_matrix)
         print(f"[Transform] 单应矩阵已保存: {path}")
 
-    def load_homography(self, path: str) -> bool:
+    def load_homography(self, path: str = HOMOGRAPHY_FILE) -> bool:
         if not os.path.exists(path):
+            print(f"[Transform] 单应矩阵文件不存在: {path}")
             return False
-        self.homography_matrix = np.load(path)["homography"]
+        data = np.load(path)
+        if "homography" in data.files:
+            self.homography_matrix = data["homography"]
+        elif "H" in data.files:
+            self.homography_matrix = data["H"]
+        else:
+            print(f"[Transform] 单应矩阵文件缺少 homography/H 字段: {path}")
+            return False
         print(f"[Transform] 已加载单应矩阵")
         return True
 
-    def pixel_to_robot_homography(self, u: float, v: float) -> np.ndarray:
+    def pixel_to_robot_homography(self, u: float, v: float,
+                                  z_world_mm: float = WORK_PLANE_Z_MM,
+                                  undistort: bool = True) -> np.ndarray:
         """
         使用单应矩阵将像素坐标转换为机器人 XY 坐标（Z = WORK_PLANE_Z_MM）
         """
         if self.homography_matrix is None:
             raise RuntimeError("请先计算或加载单应矩阵")
 
+        if undistort and self.camera_matrix is not None and self.dist_coeffs is not None:
+            pts = np.array([[[u, v]]], dtype=np.float32)
+            pts_undist = cv2.undistortPoints(
+                pts, self.camera_matrix, self.dist_coeffs,
+                P=self.camera_matrix,
+            )
+            u, v = float(pts_undist[0, 0, 0]), float(pts_undist[0, 0, 1])
+
         pt = np.array([[[u, v]]], dtype=np.float32)
         pt_robot = cv2.perspectiveTransform(pt, self.homography_matrix)
         x, y = float(pt_robot[0, 0, 0]), float(pt_robot[0, 0, 1])
-        return np.array([x, y, WORK_PLANE_Z_MM])
+        return np.array([x, y, z_world_mm])
 
     # ------------------------------------------------------------------ #
     #  辅助：绘制坐标轴 / 可视化                                            #
