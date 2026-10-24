@@ -1,0 +1,40 @@
+{
+  "timestamp_utc": "2026-10-24T20:10:57.384229+00:00",
+  "interpreter": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+  "python_files_ast_and_in_memory_compile": 35,
+  "source_mapping_count": 45,
+  "byte_identical_sources": 44,
+  "comment_only_path_redactions": [
+    "tools/test_hand_detection.py"
+  ],
+  "main_help_exit_code": 0,
+  "host_smoke": [
+    "application import without device constructors",
+    "keyboard queue empty/enqueue/dequeue",
+    "detection center conversion",
+    "stored calibration loading",
+    "historical CSV maxima recomputation",
+    "weight SHA-256 only, no deserialization"
+  ],
+  "stored_point_homography_rms_mm": 7.14531124389335,
+  "config": {
+    "GRIPPER_CLOSED_ANGLE": 15.0,
+    "PICK_SAFE_LIFT_Z_MM": 150.0
+  },
+  "privacy_pattern_findings": [],
+  "broken_local_markdown_links": [],
+  "not_run": [
+    "camera",
+    "microphone",
+    "CH347 DLL",
+    "servo motion",
+    "training",
+    "model inference",
+    "new dependency installation",
+    "hardware acceptance"
+  ],
+  "scope": "offline host checks only; historical modules syntax checked only",
+  "resolved_local_import_symbols": 112,
+  "external_dependencies": "Original requirements retained; torch supplied through ultralytics and optional Pillow for two GUI tools documented separately.",
+  "static_placement_sequence": "Current main.py uses lift150 -> place XY at150 -> lower -> release -> lift150; common helper called by ordinary and cat success branches. No movement executed."
+}

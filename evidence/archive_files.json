@@ -1,0 +1,295 @@
+{
+  "note": "Manifest excludes itself. Source and origin mapping is retained privately.",
+  "files": [
+    {
+      "path": ".gitignore",
+      "bytes": 270,
+      "sha256": "25bf4a3fc742a92fbe2007ba8e312c56700f26c52fcb682efcaf4a63b960a6a4"
+    },
+    {
+      "path": "calibration/__init__.py",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "calibration/camera_calibrator.py",
+      "bytes": 12407,
+      "sha256": "770e6a74fa23bf94d5ede4a7df19b1e7d3c5379f73f21e8f24b0f8dad7506ced"
+    },
+    {
+      "path": "calibration/hand_eye_calibrator.py",
+      "bytes": 12486,
+      "sha256": "4dff946837654848ea660395b2f6be9394e4ee4936899067d5a8191acb8b795e"
+    },
+    {
+      "path": "calibration/README.md",
+      "bytes": 284,
+      "sha256": "fcd7fa37fceccbd25ef1bd4e60d63ded116fa4e2cac0ba54fb0b38e51b2d6f32"
+    },
+    {
+      "path": "camera/__init__.py",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "camera/capture.py",
+      "bytes": 10888,
+      "sha256": "04fd7c1b508dc98ad7e68ecd33e2dce1b6162d73eb981c5b207c2ce3cdb7d3be"
+    },
+    {
+      "path": "config/__init__.py",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "config/settings.py",
+      "bytes": 6033,
+      "sha256": "916840f7f60200aea576f7784e1b566931939c46cae78b76ff71af0f023ac74f"
+    },
+    {
+      "path": "data/calibration/camera_intrinsic.npz",
+      "bytes": 1236,
+      "sha256": "ef10884be81b725516a3531aba1a239d773a986fd1281210aec78155eccf9f70"
+    },
+    {
+      "path": "data/calibration/homography.npz",
+      "bytes": 1322,
+      "sha256": "e5afa6779a2f93252ec707428ac7b8cdd994ea1392f21627596097f13057979c"
+    },
+    {
+      "path": "data/models/dataset.yaml",
+      "bytes": 139,
+      "sha256": "85055876db3160bacb7d75aade973a636211dbfd6a323bc71b8d035df795692c"
+    },
+    {
+      "path": "detection/__init__.py",
+      "bytes": 141,
+      "sha256": "30734409a109e42be653de3ce2266912614228b9b4a9c2338021553d54481d1d"
+    },
+    {
+      "path": "detection/hand_detector.py",
+      "bytes": 5624,
+      "sha256": "3275553513170aa2025d4ea8ea48239870a89666656e2dd5a9e66faaaaf3f86c"
+    },
+    {
+      "path": "detection/result.py",
+      "bytes": 567,
+      "sha256": "0e118b6b0d13d7ec2550bde0f56a27618d668f298d01ad023db48e8ad84c16df"
+    },
+    {
+      "path": "detection/yolo_detector.py",
+      "bytes": 9421,
+      "sha256": "997fda7ec2d0804ea159ada976d6caca0d68bb95892311a34abe9c9f5ee14a2d"
+    },
+    {
+      "path": "docs/ARCHITECTURE.zh-CN.md",
+      "bytes": 3433,
+      "sha256": "6dcaa0a282e83233ca942f2a612019dd91a72e3b18544387e7d64279323cab71"
+    },
+    {
+      "path": "docs/assets/technical_route.png",
+      "bytes": 342824,
+      "sha256": "9b80c094c6bf99658adf1136827071d4995cf4f115b7df3d5801125423d5444f"
+    },
+    {
+      "path": "docs/assets/technical_route.svg",
+      "bytes": 39015,
+      "sha256": "dad5ac9f428a0e43066aa0c9751556022368ebd435911e2cc5baa077f96f0bcf"
+    },
+    {
+      "path": "docs/CONTRIBUTIONS_AND_SOURCES.zh-CN.md",
+      "bytes": 4594,
+      "sha256": "40dab1eb3a047a922546dcd609d6e1a0ba3266e165e4e7725cca48c0488fc473"
+    },
+    {
+      "path": "docs/PROJECT.zh-CN.md",
+      "bytes": 2745,
+      "sha256": "16fce9062107da7b4b6fb1a77abe038f4984c344cdfaf41391c4ddddcc95cffa"
+    },
+    {
+      "path": "docs/RESULTS_AND_LIMITATIONS.zh-CN.md",
+      "bytes": 4380,
+      "sha256": "9b015e13eea9e7e2e848a794762184b25a7d0c4a25e2486e9a52d9894746348e"
+    },
+    {
+      "path": "docs/ROS2_MIGRATION_HISTORICAL.zh-CN.md",
+      "bytes": 10274,
+      "sha256": "f75a71b5d7bbf2aa77056a3022e759942943dd43b44dd47e904e4dd4658dd13a"
+    },
+    {
+      "path": "docs/RUNNING.zh-CN.md",
+      "bytes": 3513,
+      "sha256": "b899297f7e6a06efc3f87244b4f021887916af202edf1c9571a3a571b1da2dd0"
+    },
+    {
+      "path": "evidence/archive_validation.json",
+      "bytes": 1563,
+      "sha256": "fa951e7a9b0655f98535d20990eb2ee6ab5c37924807973a8cae37406d090323"
+    },
+    {
+      "path": "evidence/calibration_summary.json",
+      "bytes": 2742,
+      "sha256": "c22d25564a5745c2c5a7f019d5093ca25723862c588ee2f0faba3a482f53fdec"
+    },
+    {
+      "path": "evidence/model_provenance.json",
+      "bytes": 612,
+      "sha256": "0bed17a7af2e6d963796d2e4f5866442d164c5e7b155f9154cbce8ee6a90984d"
+    },
+    {
+      "path": "evidence/training/results.csv",
+      "bytes": 11704,
+      "sha256": "f9f2987c30378bc297c717f42a32613de1e1359d43f382b3928c1c79afc99a80"
+    },
+    {
+      "path": "evidence/training/summary.json",
+      "bytes": 1414,
+      "sha256": "5173698c7d914542c75d13ffaea62d880c83b0912b9590a0512599e1db27e5ba"
+    },
+    {
+      "path": "main.py",
+      "bytes": 32674,
+      "sha256": "a28ebaad89ed336faf030515b85a09a2d152f540e662bd3ee23ab1683de56c26"
+    },
+    {
+      "path": "README.md",
+      "bytes": 3977,
+      "sha256": "8f73f023761deeb8969e98d5051128000fdb613d621fa41aae2bb125fac93d0a"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 747,
+      "sha256": "ba2758459ed97a1926d5032d8c9a353795ffd47d00c30e7de7762581991f91c2"
+    },
+    {
+      "path": "robot/__init__.py",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "robot/arm_controller.py",
+      "bytes": 24642,
+      "sha256": "3106cee0a0bd08ec16515ca29775d6212915798fa51bb82b15ccbaa0adb920c4"
+    },
+    {
+      "path": "robot/ch347_i2c.py",
+      "bytes": 14110,
+      "sha256": "4652dd207c377a74384523c2ca078d4dd68b4fae3686c5f86867f197ddba9efa"
+    },
+    {
+      "path": "robot/HARDWARE_GUIDE.md",
+      "bytes": 8195,
+      "sha256": "7fdea74ca797bd041c59d0c034b691a14978c69d1dfe3f61c28cb37db373b214"
+    },
+    {
+      "path": "robot/pca9685.py",
+      "bytes": 12094,
+      "sha256": "90a07aadfe438d42f50835ccbd0e9c681a62938f3896e0d932c53ae95b1c439f"
+    },
+    {
+      "path": "robot/servo.py",
+      "bytes": 20025,
+      "sha256": "4cc34dfed2ce5d300344d9cb758555f71167d21a5159d892dc45f81d2e93ae0c"
+    },
+    {
+      "path": "robot/voice_controller.py",
+      "bytes": 20424,
+      "sha256": "7e09bfb35c40cf5c165e00c4d06280cb1a26b5bc89b914a3cd03f01ee0527109"
+    },
+    {
+      "path": "tools/__init__.py",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tools/calibrate_camera.py",
+      "bytes": 12476,
+      "sha256": "9baddec398db5c280ca2d4b3fd7416bf088c812eebd0bd8006c27fcdd676c30d"
+    },
+    {
+      "path": "tools/calibrate_hand_eye.py",
+      "bytes": 15718,
+      "sha256": "cf1d5b81442e0f72bc51c307bf59029219eb43daa2a6461be66214a68454eeec"
+    },
+    {
+      "path": "tools/calibrate_homography.py",
+      "bytes": 22222,
+      "sha256": "461da2f2583dd558e4c9cf87a4490ed761071e9d8a2caaa135ad289fadd02636"
+    },
+    {
+      "path": "tools/CALIBRATION_GUIDE.md",
+      "bytes": 20546,
+      "sha256": "438d89bb0e504cc59753e253c47bd61cd774248977b401d1bab98a77b77d3ca4"
+    },
+    {
+      "path": "tools/collect_dataset.py",
+      "bytes": 7832,
+      "sha256": "d700b19afa125547e2ba710d79aa447d1a2edaa8b08e575b7717134882d96723"
+    },
+    {
+      "path": "tools/color_detect_live.py",
+      "bytes": 29651,
+      "sha256": "358420bbd700f63ee743ee4992465b689de5dd1dce7f2c605f24ceff26968df0"
+    },
+    {
+      "path": "tools/convert_labelme.py",
+      "bytes": 3384,
+      "sha256": "703072e135722cf8937d3e0d5115a054b07ebb85aafad37e2f5065694e180ac7"
+    },
+    {
+      "path": "tools/debug_detectors.py",
+      "bytes": 14345,
+      "sha256": "61d555bc6f79bd7f62c6f0747538063c3d8f8f2fee1bf69ccc927679611f1137"
+    },
+    {
+      "path": "tools/hsv_tuner.py",
+      "bytes": 1364,
+      "sha256": "9a73dcc75a9504bbc17f544c1d263775a7e204ce396ff03e7bd5e7de1898e583"
+    },
+    {
+      "path": "tools/README.md",
+      "bytes": 2583,
+      "sha256": "511b22331dc40d087cd745b22eb44b9828854511cc8e3465239c5179af84f782"
+    },
+    {
+      "path": "tools/test_hand_detection.py",
+      "bytes": 4084,
+      "sha256": "382ddc85fa50724f2e4e5a5a01a3d54dff22025f972c1af488f4ae79809700fb"
+    },
+    {
+      "path": "tools/train.py",
+      "bytes": 11923,
+      "sha256": "288a3d5eae63ed9809ee0254e4afc3989eca06b14769b4502fe42a816258f9d5"
+    },
+    {
+      "path": "tools/verify_model.py",
+      "bytes": 1168,
+      "sha256": "ddfe13006805e30f4cb2b7cf3445fa0e524be0488cfef9eeeab1ef2f20c249ce"
+    },
+    {
+      "path": "transform/__init__.py",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "transform/coordinate_transform.py",
+      "bytes": 13708,
+      "sha256": "3a4258664396795bfd9ed414b18cfb8d95df4d40bc86abcaf9b4271352a1ce5f"
+    },
+    {
+      "path": "utils/__init__.py",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "utils/image_utils.py",
+      "bytes": 8723,
+      "sha256": "d30b01c8b5afd53a353a623d0e98b9f658ee2c8e4d5b481f2e1d749af77eef46"
+    },
+    {
+      "path": "vision_pipeline.py",
+      "bytes": 6044,
+      "sha256": "f7b99985ddb925940048bbd39618a5c745e5f7df3135037e38d08a80f623b0c3"
+    }
+  ]
+}

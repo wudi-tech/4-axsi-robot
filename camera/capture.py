@@ -58,28 +58,41 @@ class CameraCapture:
         """打开摄像头，返回是否成功"""
         import platform
         if CAMERA_BACKEND is not None:
-            backend = CAMERA_BACKEND
+            backends = [CAMERA_BACKEND]
         elif platform.system() == "Windows":
-            backend = cv2.CAP_DSHOW   # Windows 下 DirectShow 最稳定
+            # 优先 DSHOW（设置参数支持最好），失败则回退 FFmpeg/ANY
+            backends = [cv2.CAP_DSHOW, cv2.CAP_ANY]
         else:
-            backend = cv2.CAP_ANY
+            backends = [cv2.CAP_ANY]
 
-        self._cap = cv2.VideoCapture(self.index, backend)
-        if not self._cap.isOpened():
+        backend_names = {cv2.CAP_DSHOW: "DSHOW", cv2.CAP_MSMF: "MSMF", cv2.CAP_ANY: "ANY"}
+        opened = False
+        used_backend = None
+        for backend in backends:
+            self._cap = cv2.VideoCapture(self.index, backend)
+            if self._cap.isOpened():
+                opened = True
+                used_backend = backend
+                break
+        if not opened:
             raise RuntimeError(
                 f"无法打开摄像头 (index={self.index})，"
                 "请检查设备连接或索引是否正确。"
             )
 
-        # ── MJPG 格式（必须在设置分辨率之前设置，否则部分驱动不生效）──────
-        if CAMERA_FOURCC:
-            fourcc = cv2.VideoWriter_fourcc(*CAMERA_FOURCC)
-            self._cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-
         # ── 分辨率 / 帧率 ─────────────────────────────────────────────────
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._cap.set(cv2.CAP_PROP_FPS,          self.fps)
+
+        # ── MJPG 格式 ───────────────────────────────────────────────────
+        # 部分驱动要求先设分辨率再设 FOURCC，否则 MJPG 不生效导致 YUY2 带宽不足丢帧
+        if CAMERA_FOURCC:
+            fourcc = cv2.VideoWriter_fourcc(*CAMERA_FOURCC)
+            self._cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+            # 验证 FOURCC 是否生效，不生效则重试一次
+            if int(self._cap.get(cv2.CAP_PROP_FOURCC)) != fourcc:
+                self._cap.set(cv2.CAP_PROP_FOURCC, fourcc)
 
         # ── 曝光控制（减少帧间亮度抖动，改善果冻效应）───────────────────────
         # DirectShow：auto=3 / manual=1；V4L2：auto=3 / manual=1（值相同）
@@ -97,7 +110,8 @@ class CameraCapture:
         actual_exp  = self._cap.get(cv2.CAP_PROP_EXPOSURE)
         fourcc_int  = int(self._cap.get(cv2.CAP_PROP_FOURCC))
         actual_fmt  = "".join([chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)])
-        print(f"[Camera] 已打开: index={self.index}  "
+        backend_label = backend_names.get(used_backend, str(used_backend))
+        print(f"[Camera] 已打开: index={self.index}  backend={backend_label}  "
               f"分辨率={actual_w}x{actual_h}  FPS={actual_fps:.1f}  "
               f"格式={actual_fmt}  曝光={actual_exp:.0f}")
         if actual_fps < 15:

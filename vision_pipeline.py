@@ -22,6 +22,7 @@ from config.settings import (
     CAMERA_INDEX,
     HOMOGRAPHY_FILE,
     WORK_PLANE_Z_MM,
+    YOLO_CONF_THRESHOLD,
 )
 from detection.result import DetectionResult
 from detection.yolo_detector import YOLODetector
@@ -75,7 +76,8 @@ class VisionPipeline:
         self._transform.load_camera_params(camera_calib_path)
         self._ready = self._transform.load_homography(homography_path)
 
-        self._detector = YOLODetector(model_path=self.model_path)
+        self._detector = YOLODetector(model_path=self.model_path,
+                                       conf_threshold=YOLO_CONF_THRESHOLD)
 
         if self._ready:
             print("[Pipeline] 初始化完成（YOLO + 单应矩阵）✓")

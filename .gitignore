@@ -1,18 +1,27 @@
-# Large datasets (zip archives only — extracted datasets are fine)
-data/images/*.zip
-data/models/*.zip
-
-# Python cache
 __pycache__/
-*.pyc
-
-# Binaries / DLL
-*.DLL
+*.py[cod]
+.venv/
+venv/
+*env/
+.pytest_cache/
+.vscode/
+.idea/
+.env
+.env.*
+!.env.example
 *.dll
-
-# Scratch / test files
-ku.py
-mathtest.py
-yolo26n.pt
-yolov8n.pt
-20060515test.py
+*.DLL
+*.pt
+*.pth
+*.onnx
+*.task
+*.mdl
+*.fst
+*.zip
+*.7z
+*.log
+data/images/
+data/dataset/
+data/models/train*/
+data/models/vosk-model*/
+runs/

@@ -25,7 +25,7 @@ CAMERA_FOURCC = "MJPG"
 CAMERA_AUTO_EXPOSURE = False
 # 手动曝光值，仅 CAMERA_AUTO_EXPOSURE=False 时生效。
 # DirectShow 下为 2^n 秒，-6 ≈ 1/64s，适合室内光线。调亮加大（-5），调暗减小（-7）
-CAMERA_EXPOSURE = -4
+CAMERA_EXPOSURE = -6
 
 # ─── 标定板参数 ────────────────────────────────────────────────
 # 棋盘格内角点数 (列数-1, 行数-1)
@@ -53,6 +53,9 @@ ARUCO_DICT_TYPE = "DICT_4X4_50"
 
 # YOLO 自定义模型路径（训练完成后由 tools/train.py 生成）
 YOLO_MODEL_PATH = os.path.join(DATA_DIR, "models", "best.pt")
+
+# YOLO 检测置信度阈值（0~1），低于此值的检测结果被丢弃
+YOLO_CONF_THRESHOLD = 0.3
 
 # 颜色检测 HSV 范围 (OpenCV: H 0-180, S 0-255, V 0-255)
 # 以下为初始参考值，请用 tools/multi_color_detect.py 调参后替换
@@ -101,3 +104,33 @@ MIN_CONTOUR_AREA = 500
 # 工作平面 Z 值 (单位与机器人一致, 通常为 mm)
 # Eye-to-Hand 时相机固定，目标在已知高度的工作台面上
 WORK_PLANE_Z_MM = 0.0     # 工作台面相对机器人基坐标系的 Z 高度
+
+# 单应矩阵输出坐标是否需要交换 X/Y
+# 如果机械臂移动方向和视觉坐标不一致（比如视觉 X 轴对应机械臂 Y 轴），
+# 将此选项设为 True 即可修正，无需重新标定。
+HOMOGRAPHY_SWAP_XY = False
+
+# ─── 机械臂 / 夹爪参数 ─────────────────────────────────────────
+# 夹爪完全闭合角度。0° 容易让舵机堵转，保留少量开度更安全。
+GRIPPER_CLOSED_ANGLE = 15.0
+
+# 抓取成功后的安全抬升高度：先原地抬高，再移动到放置点，避免拖碰物体。
+PICK_SAFE_LIFT_Z_MM = 150.0
+
+# 抓取成功后的固定放置点（机器人基坐标系，单位 mm）。
+PICK_PLACE_X_MM = 160.0
+PICK_PLACE_Y_MM = 0.0
+PICK_PLACE_Z_MM = 0.0
+
+# ─── 小猫模仿模式参数 ──────────────────────────────────────────
+# 从检测到的物品中随机选择（而非总是置信度最高），
+# 模拟猫"指错"的行为。选中用户真正想要的目标的概率 = 1/N。
+
+# 随机选择时是否排除当前帧中置信度最高的物品（增加"犯错"概率）
+CAT_EXCLUDE_BEST = False
+
+# 奖励动作中人手检测的最小置信度
+CAT_HAND_CONFIDENCE = 0.5
+
+# 奖励动作持续秒数
+CAT_REWARD_DURATION_S = 5.0

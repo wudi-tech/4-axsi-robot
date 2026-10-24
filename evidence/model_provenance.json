@@ -1,0 +1,7 @@
+{
+  "note": "Weights are intentionally excluded; hashes only. The first three current local files match. This supersedes the historical report warning that the runtime copy was not synchronized. Matching bytes do not by themselves bind a particular CSV row to a checkpoint.",
+  "runtime_best_sha256": "a6f20f68b378062f40d0cfeda236d09fcc75aed3b2685325ea2396d8a9dcd99d",
+  "related_training_best_sha256": "a6f20f68b378062f40d0cfeda236d09fcc75aed3b2685325ea2396d8a9dcd99d",
+  "legacy_project_train_best_sha256": "d73a2334829c94a351d80760ae8b611c63c6cc9e19155e1e875b7cc60b1d4f82",
+  "weight_bytes": 6257891
+}

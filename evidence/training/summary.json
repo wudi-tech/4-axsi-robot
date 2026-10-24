@@ -1,0 +1,52 @@
+{
+  "artifact": "historical YOLO training log; not a new evaluation",
+  "rows": 92,
+  "epoch_range": [
+    3,
+    94
+  ],
+  "best_per_metric": {
+    "metrics/precision(B)": {
+      "value": 0.91677,
+      "epoch": 62
+    },
+    "metrics/recall(B)": {
+      "value": 0.8378,
+      "epoch": 46
+    },
+    "metrics/mAP50(B)": {
+      "value": 0.86211,
+      "epoch": 82
+    },
+    "metrics/mAP50-95(B)": {
+      "value": 0.67725,
+      "epoch": 74
+    },
+    "derived/F1": {
+      "value": 0.8499773728982365,
+      "epoch": 76
+    }
+  },
+  "last_record": {
+    "epoch": 94.0,
+    "time": 4055.5,
+    "train/box_loss": 0.60936,
+    "train/cls_loss": 0.49308,
+    "train/dfl_loss": 1.15337,
+    "metrics/precision(B)": 0.89404,
+    "metrics/recall(B)": 0.80737,
+    "metrics/mAP50(B)": 0.84946,
+    "metrics/mAP50-95(B)": 0.66635,
+    "val/box_loss": 0.8121,
+    "val/cls_loss": 0.59941,
+    "val/dfl_loss": 1.31721,
+    "lr/pg0": 0.00055188,
+    "lr/pg1": 0.00055188,
+    "lr/pg2": 0.00055188
+  },
+  "notes": [
+    "Different maxima occur at different epochs and do not describe one checkpoint.",
+    "No training data or weights are included. CSV origin is the related vision_system experiment, not data/models/train in this archive.",
+    "The CSV records epochs 3-94. It does not prove that epochs 1-2 were recorded or establish the early-stopping cause."
+  ]
+}

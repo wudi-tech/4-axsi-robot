@@ -49,8 +49,10 @@ CLASS_NAMES = [
 def generate_dataset_yaml(dataset_dir: str, class_names: list) -> str:
     """生成 YOLO 格式的 dataset.yaml 配置文件（用于手动采集的数据集）"""
     yaml_path = os.path.join(dataset_dir, "dataset.yaml")
+    # 使用相对路径，确保生成的 yaml 可跨电脑迁移
+    rel_root = os.path.relpath(dataset_dir, MODEL_DIR).replace("\\", "/")
     config = {
-        "path": dataset_dir.replace("\\", "/"),
+        "path": rel_root,
         "train": "images/train",
         "val":   "images/val",
         "nc":    len(class_names),
@@ -73,8 +75,10 @@ def get_dataset_yaml() -> str:
     if os.path.exists(roboflow_yaml):
         os.makedirs(MODEL_DIR, exist_ok=True)
         fixed_yaml = os.path.join(MODEL_DIR, "dataset.yaml")
+        # 使用相对路径，确保生成的 yaml 可跨电脑迁移
+        rel_path = os.path.relpath(ROBOFLOW_DIR, MODEL_DIR).replace("\\", "/")
         config = {
-            "path":  ROBOFLOW_DIR.replace("\\", "/"),
+            "path":  rel_path,
             "train": "train/images",
             "val":   "valid/images",
             "test":  "test/images",

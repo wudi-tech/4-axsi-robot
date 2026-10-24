@@ -223,13 +223,13 @@ def run_auto(camera_index: int, use_undistort: bool):
                 ]
             draw_hud(vis, lines)
 
-            # 在左下角标注坐标系说明
+            # 在左下角标注坐标系说明（Y↓ 符合标定约定：棋盘格第一行→右，第一列→下）
             cv2.arrowedLine(vis, (40, vis.shape[0]-50),
                             (120, vis.shape[0]-50), (0, 200, 255), 2, tipLength=0.2)
             cv2.arrowedLine(vis, (40, vis.shape[0]-50),
-                            (40, vis.shape[0]-130), (0, 200, 255), 2, tipLength=0.2)
+                            (40, vis.shape[0]-10), (0, 200, 255), 2, tipLength=0.2)
             _put_cn(vis, "X(→)", (125, vis.shape[0]-60), (0,200,255), small=True)
-            _put_cn(vis, "Y(↑)", (45,  vis.shape[0]-140), (0,200,255), small=True)
+            _put_cn(vis, "Y(↓)", (45,  vis.shape[0]-28), (0,200,255), small=True)
 
             cv2.imshow("Homography Auto", vis)
             key = cv2.waitKey(1) & 0xFF

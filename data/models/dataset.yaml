@@ -3,7 +3,7 @@ names:
 - mickey
 - tissue
 nc: 3
-path: E:/PYproject/vision_system/data/images/carrot.v3i.yolov8
+path: ../images/carrot.v3i.yolov8
 test: test/images
 train: train/images
 val: valid/images

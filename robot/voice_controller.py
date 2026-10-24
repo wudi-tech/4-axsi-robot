@@ -17,7 +17,7 @@
 下载中文小模型（约 50 MB，够用于固定指令识别）
     https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
     解压后重命名为 vosk-model-small-cn，放到：
-        vision_system/data/models/vosk-model-small-cn/
+        4_axis_robot/data/models/vosk-model-small-cn/
 
 典型用法
 --------

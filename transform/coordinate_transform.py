@@ -26,6 +26,7 @@ from config.settings import (
     HAND_EYE_CALIB_FILE,
     CAMERA_CALIB_FILE,
     HOMOGRAPHY_FILE,
+    HOMOGRAPHY_SWAP_XY,
 )
 
 
@@ -180,6 +181,8 @@ class CoordinateTransform:
 
         P_cam  = self.pixel_to_camera(u, v, z_world_mm)
         P_base = self.camera_to_robot(P_cam)
+        if HOMOGRAPHY_SWAP_XY:
+            P_base[0], P_base[1] = P_base[1], P_base[0]
         return P_base
 
     def pixels_to_robot_batch(self, points_uv: np.ndarray,
@@ -268,6 +271,8 @@ class CoordinateTransform:
         pt = np.array([[[u, v]]], dtype=np.float32)
         pt_robot = cv2.perspectiveTransform(pt, self.homography_matrix)
         x, y = float(pt_robot[0, 0, 0]), float(pt_robot[0, 0, 1])
+        if HOMOGRAPHY_SWAP_XY:
+            x, y = y, x
         return np.array([x, y, z_world_mm])
 
     # ------------------------------------------------------------------ #

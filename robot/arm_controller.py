@@ -9,7 +9,7 @@
     m2          肘关节俯仰
     L2 = 155 mm 小臂（m2 → m3）
     m3          腕关节俯仰
-    L3 = 160 mm 腕杆（m3 → m4/爪尖，抓取时保持竖直）
+    L3 = 160 mm 腕杆（m3 → m4/爪尖，姿态由IK搜索决定，不强制竖直）
     m4          夹爪开合（180°，不参与 FK/IK）
 
 本文件提供：
@@ -127,7 +127,7 @@ class ArmController:
             L0: 离地高度，m0 水平旋转轴 → m1 俯仰轴（静态，不随关节转动）
             L1: 大臂长度，m1 → m2（随 m1 俯仰）
             L2: 小臂长度，m2 → m3（随 m1+m2 俯仰）
-            L3: 腕部到爪尖长度，m3 → m4（随 m1+m2+m3 俯仰）
+            L3: 腕部到爪尖长度，m3 → m4（随 m1+m2+m3 俯仰，不强制竖直）
 
         注：m4（夹爪）仅作开合控制，不参与运动学链
         """
@@ -330,7 +330,11 @@ class ArmController:
             A = (0,0,0)
             B = (0,0,L0)
             |BC| = L1, |CD| = L2, |DE| = L3
-            A/B/C/D/E 共竖直平面，抓取时 DE 垂直工作平面。
+            A/B/C/D/E 共竖直平面。
+
+        DE（腕杆/L3）不再强制垂直于工作平面，而是在 TOOL_PITCH_RANGE
+        范围内搜索可行姿态，仅受 CDE 舵机限位 [38°, 180°] 约束。
+        评分优先接近竖直向下（适合桌面抓取），其次最小化关节运动。
 
         返回值与 ku.solve() 传给 ku.put(a,b,c,d) 的角度数组一致：
             m0 = 底座水平偏航角
@@ -353,9 +357,9 @@ class ArmController:
         def score(item: dict) -> float:
             angles = item["servo_angles"]
             motion_cost = sum((a - b) ** 2 for a, b in zip(angles, reference))
-            # 正常桌面抓取优先让 D 在 E 上方，即爪尖/腕杆竖直向下。
-            tool_penalty = 0.0 if item["tool_direction"] == "down" else 100000.0
-            return motion_cost + tool_penalty
+            # 优先竖直向下（tool_pitch ≈ -90°），偏离越多惩罚越重
+            tool_cost = abs(item.get("tool_pitch_deg", -90) + 90.0) * 200.0
+            return motion_cost + tool_cost
 
         best = min(candidates, key=score)
         self._last_ik_solution = best
@@ -365,9 +369,16 @@ class ArmController:
         """返回最近一次 IK 选中的候选解，便于调试几何角和构型。"""
         return self._last_ik_solution
 
+    # 腕杆 L3 姿态搜索范围（绝对俯仰角，度）。
+    # 0=水平向前，-90=竖直向下（理想桌面抓取），+90=竖直向上。
+    # 改为在范围内搜索而非仅 ±90°，L3 只需满足 CDE ∈ [38°,180°]。
+    TOOL_PITCH_RANGE = (-150, -30)      # 向下抓取姿态
+    TOOL_PITCH_RANGE_ALT = (30, 150)    # 向上姿态（备选）
+    TOOL_PITCH_STEP = 5                  # 搜索步长
+
     def _inverse_kinematics_candidates(self, x_mm: float, y_mm: float,
                                        z_mm: float) -> list[dict]:
-        """枚举所有满足几何约束和舵机硬范围的 IK 候选解。"""
+        """在 TOOL_PITCH_RANGE 内搜索所有可行的 IK 候选解。"""
         L0, L1, L2, L3 = self._link_lengths
         x, y, z = float(x_mm), float(y_mm), float(z_mm)
         rho = float(np.hypot(x, y))
@@ -375,86 +386,97 @@ class ArmController:
 
         candidates = []
 
-        # tool_sign=+1: D 在 E 上方，DE 竖直向下，适合桌面抓取。
-        # tool_sign=-1: D 在 E 下方，DE 竖直向上，保留为数学候选。
-        for tool_sign in (1.0, -1.0):
-            tool_pitch = -tool_sign * np.pi / 2.0
-            dz_d = z + tool_sign * L3 - L0
-            bd = float(np.hypot(rho, dz_d))
-            if bd < 1e-8:
-                continue
-            if bd < abs(L1 - L2) - 1e-8 or bd > L1 + L2 + 1e-8:
-                continue
+        # 合并主范围和备选范围，向下姿态优先（排在前面，评分更优）
+        ranges = [
+            (self.TOOL_PITCH_RANGE[0], self.TOOL_PITCH_RANGE[1]),
+            (self.TOOL_PITCH_RANGE_ALT[0], self.TOOL_PITCH_RANGE_ALT[1]),
+        ]
 
-            cos_q2 = self._clip_unit(
-                (bd ** 2 - L1 ** 2 - L2 ** 2) / (2.0 * L1 * L2)
-            )
-            q2_abs = float(np.arccos(cos_q2))
-            base_to_d = float(np.arctan2(dz_d, rho))
+        for tp_lo, tp_hi in ranges:
+            for tp_deg in range(tp_lo, tp_hi + 1, self.TOOL_PITCH_STEP):
+                tool_pitch = np.radians(tp_deg)
 
-            for q2 in (q2_abs, -q2_abs):
-                q1 = base_to_d - float(np.arctan2(
-                    L2 * np.sin(q2),
-                    L1 + L2 * np.cos(q2),
-                ))
-                q3 = tool_pitch - (q1 + q2)
+                # D 在竖直平面内的位置：E - L3 * (cos(tp), sin(tp))
+                D_r = rho - L3 * np.cos(tool_pitch)
+                if D_r < 0.0:          # D 落在旋转轴后方，不可达
+                    continue
 
-                geom = self._ik_geometry_from_angles(
-                    x, y, z, rho, tool_sign, q1, q2
+                D_z  = z - L3 * np.sin(tool_pitch)
+                dz_d = D_z - L0        # D 相对 B=(0,0,L0) 的高度差
+                bd   = float(np.hypot(D_r, dz_d))
+                if bd < 1e-8:
+                    continue
+                if bd < abs(L1 - L2) - 1e-8 or bd > L1 + L2 + 1e-8:
+                    continue
+
+                cos_q2 = self._clip_unit(
+                    (bd ** 2 - L1 ** 2 - L2 ** 2) / (2.0 * L1 * L2)
                 )
-                if not self._geometry_angles_in_range(geom):
-                    continue
+                q2_abs = float(np.arccos(cos_q2))
+                base_to_d = float(np.arctan2(dz_d, D_r))
 
-                servo_angles = [
-                    yaw_deg,
-                    geom["angle_ABC_deg"] - 90.0,
-                    geom["angle_BCD_deg"],
-                    geom["angle_CDE_deg"],
-                ]
-                if not self._servo_angles_in_hard_range(servo_angles):
-                    continue
+                for q2 in (q2_abs, -q2_abs):
+                    q1 = base_to_d - float(np.arctan2(
+                        L2 * np.sin(q2),
+                        L1 + L2 * np.cos(q2),
+                    ))
 
-                candidates.append({
-                    "servo_angles": servo_angles,
-                    "geometry_angles": {
-                        "ABC": geom["angle_ABC_deg"],
-                        "BCD": geom["angle_BCD_deg"],
-                        "CDE": geom["angle_CDE_deg"],
-                    },
-                    "points": {
-                        "A": geom["A"],
-                        "B": geom["B"],
-                        "C": geom["C"],
-                        "D": geom["D"],
-                        "E": geom["E"],
-                    },
-                    "tool_direction": "down" if tool_sign > 0 else "up",
-                    "rho": rho,
-                    "BD": bd,
-                })
+                    geom = self._ik_geometry_from_angles(
+                        x, y, z, rho, tool_pitch, q1, q2
+                    )
+                    if not self._geometry_angles_in_range(geom):
+                        continue
+
+                    servo_angles = [
+                        yaw_deg,
+                        geom["angle_ABC_deg"] - 90.0,
+                        geom["angle_BCD_deg"],
+                        geom["angle_CDE_deg"],
+                    ]
+                    if not self._servo_angles_in_hard_range(servo_angles):
+                        continue
+
+                    candidates.append({
+                        "servo_angles": servo_angles,
+                        "geometry_angles": {
+                            "ABC": geom["angle_ABC_deg"],
+                            "BCD": geom["angle_BCD_deg"],
+                            "CDE": geom["angle_CDE_deg"],
+                        },
+                        "points": {
+                            "A": geom["A"],
+                            "B": geom["B"],
+                            "C": geom["C"],
+                            "D": geom["D"],
+                            "E": geom["E"],
+                        },
+                        "tool_pitch_deg": tp_deg,
+                        "rho": rho,
+                        "BD": bd,
+                    })
 
         return candidates
 
     def _ik_geometry_from_angles(self, x: float, y: float, z: float,
-                                 rho: float, tool_sign: float,
-                                 q1: float, q2: float) -> dict:
+                                 rho: float, tool_pitch: float,
+                                 q1: float, _q2: float) -> dict:
         """由候选关节角反算 A/B/C/D/E 与 mathtest 中的三个内角。"""
-        L0, L1, L2, L3 = self._link_lengths
+        L0, L1, _L2, L3 = self._link_lengths
         ux, uy = (1.0, 0.0) if rho < 1e-8 else (x / rho, y / rho)
 
         c_r = L1 * np.cos(q1)
         c_z = L0 + L1 * np.sin(q1)
-        d_r = c_r + L2 * np.cos(q1 + q2)
-        d_z = c_z + L2 * np.sin(q1 + q2)
 
         A = np.array([0.0, 0.0, 0.0])
         B = np.array([0.0, 0.0, L0])
         C = np.array([c_r * ux, c_r * uy, c_z])
-        D = np.array([d_r * ux, d_r * uy, d_z])
+        # D 由 E - L3*(cos(tp), sin(tp)) 确定，消除浮点累积误差
+        D = np.array([
+            x - L3 * np.cos(tool_pitch) * ux,
+            y - L3 * np.cos(tool_pitch) * uy,
+            z - L3 * np.sin(tool_pitch),
+        ])
         E = np.array([x, y, z])
-
-        # 浮点误差下 D 可能偏离目标半径/高度极小，按约束投影回理论点。
-        D = np.array([x, y, z + tool_sign * L3])
 
         return {
             "A": A,
